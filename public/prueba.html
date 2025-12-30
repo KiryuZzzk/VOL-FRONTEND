@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Prueba Firebase UI</title>
+    <link rel="stylesheet" href="https://www.gstatic.com/firebasejs/ui/6.0.2/firebase-ui-auth.css" />
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/ui/6.0.2/firebase-ui-auth.js"></script>
+  </head>
+  <body>
+    <h2>Login FirebaseUI (prueba externa)</h2>
+    <div id="firebaseui-auth-container"></div>
+
+    <script>
+      const firebaseConfig = {
+        apiKey: "AIzaSyCQgH6Jjkhd2x9FBMvqder-TpKkotE3Waw",
+        authDomain: "soyvoluntarioregistros.firebaseapp.com",
+        projectId: "soyvoluntarioregistros",
+        storageBucket: "soyvoluntarioregistros.appspot.com",
+        messagingSenderId: "793970827889",
+        appId: "1:793970827889:web:4c251a6e684e1cb4e471d0",
+      };
+
+      firebase.initializeApp(firebaseConfig);
+      const ui = new firebaseui.auth.AuthUI(firebase.auth());
+
+      ui.start("#firebaseui-auth-container", {
+        signInOptions: [
+          firebase.auth.EmailAuthProvider.PROVIDER_ID,
+          firebase.auth.GoogleAuthProvider.PROVIDER_ID,
+        ],
+      });
+    </script>
+  </body>
+</html>
