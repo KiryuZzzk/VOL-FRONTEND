@@ -7,12 +7,12 @@ import HomePage from "./pages/HomePage";
 import Programas from "./pages/Programas";
 import Register from "./pages/Register";
 import Login from "./pages/Login";
-//import Platform from "./pages/Platform"; // viejo
 
 import Platform from "./pages/Platformv2"; // Nueva versión :)
 import PlatformLayout from "./components/PlatformLayout";
 import Calendario from "./components/Calendario";
 import UsuariosPage from "./pages/Usuarios";
+import Trayectoria from "./pages/Trayectoria";
 
 import {
   BrowserRouter as Router,
@@ -32,10 +32,9 @@ import RegistroDoble from "./components/RegistroDoble";
 import MiPerfil from "./components/MiPerfil";
 import AdminSidebarMenu from "./components/AdminSideMenu";
 
-// 👉 nuevos imports
-import TusProgramas from "./components/TusProgramas"; // (lo tienes importado; si no lo usas aquí, no pasa nada)
-import BlockTimeline from "./pages/BlockTimeline"; // 👈 ANTESALA (bloques -> módulos)
-import rawProgramsData from "./components/datav2.json"; // ajusta si tu json está en otra carpeta
+// páginas / componentes
+import BlockTimeline from "./pages/BlockTimeline";
+import rawProgramsData from "./components/datav2.json";
 
 // =======================
 // 🔧 Helpers para programas
@@ -165,7 +164,6 @@ function AppInner() {
     );
   }
 
-  // 🔴 Caso especial: Firebase OK pero no existe en BD
   if (needsDoubleRegister) {
     const current = firebaseUser || auth.currentUser;
 
@@ -183,17 +181,9 @@ function AppInner() {
     );
   }
 
-  console.log(
-    "🧭 Render rutas normales. Logueado:",
-    !!userInfo,
-    " Roles admin/mod:",
-    modOrAdmin
-  );
-
   return (
     <div className="App">
       {!hideNavbar && (userInfo ? <NavbarLogIn /> : <Navbar />)}
-
       {modOrAdmin && <AdminSidebarMenu />}
 
       <Routes>
@@ -222,6 +212,16 @@ function AppInner() {
               element={
                 <PlatformLayout modOrAdmin={modOrAdmin}>
                   <ProgramaPage />
+                </PlatformLayout>
+              }
+            />
+
+
+            <Route
+              path="/Trayectoria"
+              element={
+                <PlatformLayout modOrAdmin={modOrAdmin}>
+                  <Trayectoria />
                 </PlatformLayout>
               }
             />
@@ -264,17 +264,13 @@ function AppInner() {
   );
 }
 
-// Página que muestra el timeline según el ?id= del programa
+// ✅ NUEVO: acepta ?code= o ?id=
+// Página que muestra el timeline según el ?code= del programa (backend-driven)
 function ProgramaPage() {
   const [searchParams] = useSearchParams();
-  const programId = searchParams.get("id");
+  const programCode = (searchParams.get("code") || "").trim().toUpperCase();
 
-  const activeProgram = useMemo(
-    () => ALL_PROGRAMS.find((p) => p.id === programId) || null,
-    [programId]
-  );
-
-  if (!programId || !activeProgram) {
+  if (!programCode) {
     return (
       <div style={{ padding: "16px" }}>
         Selecciona un programa desde la sección &quot;Tus Programas&quot;.
@@ -284,21 +280,14 @@ function ProgramaPage() {
 
   return (
     <BlockTimeline
-      programId={programId}
-      programs={ALL_PROGRAMS}
+      programCode={programCode}
       onActivityClick={(payload) => {
         console.log("Actividad clickeada:", payload);
-        // payload trae:
-        // {
-        //   programId, programTitle, blockId, blockTitle,
-        //   moduleId, moduleTitle,
-        //   activity
-        // }
-        // aquí luego abres video / lectura / scorm / url según payload.activity.type
       }}
     />
   );
 }
+
 
 export default function App() {
   return (

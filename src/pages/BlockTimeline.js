@@ -23,11 +23,9 @@ import {
 } from "react-icons/fi";
 
 import CourseTimeline from "./CourseTimeline";
-import data from "../components/datav2.json"; // 👈 ajusta si tu ruta es distinta
+import { useSearchParams } from "react-router-dom";
+import { auth } from "../firebase";
 
-// =======================
-// 🎨 PALETA BASE
-// =======================
 const COLORS = {
   bg: "#f5f0ff",
   white: "#ffffff",
@@ -42,8 +40,6 @@ const COLORS = {
   line: "#d4ccdf",
 };
 
-// Gradientes (distintos por bloque para evitar copy-paste vibe)
-// (NO los toqué porque me dijiste que el resto está chingón)
 const GRADIENTS = [
   "linear-gradient(135deg, #ff3333 0%, #ff6b6b 100%)",
   "linear-gradient(135deg, #7c3aed 0%, #ec4899 100%)",
@@ -55,9 +51,9 @@ const GRADIENTS = [
 
 const safeTitle = (obj) => obj?.title || obj?.name || "Sin título";
 
-// =======================
-// 🧮 STATS
-// =======================
+const BACKEND_URL = "https://vol-backend.onrender.com";
+const DEBUG = false;
+
 const getBlockStats = (block) => {
   let total = 0;
   let done = 0;
@@ -107,9 +103,6 @@ const isBlockLocked = (blocks, index) => {
   return !prevStats.completed;
 };
 
-// =======================
-// 🔥 UI helpers
-// =======================
 const getBlockGradient = (index) => GRADIENTS[index % GRADIENTS.length];
 
 const getStatusMeta = ({ locked, completed }) => {
@@ -118,32 +111,171 @@ const getStatusMeta = ({ locked, completed }) => {
   return { label: "EN PROGRESO", icon: <FiAlertCircle size={14} /> };
 };
 
-// =======================
-// 🌟 COMPONENTE PRINCIPAL
-// =======================
+const normalizeFromBackend = ({ catalog, progress }) => {
+  const program = catalog?.program || null;
+
+  const progressMap = {};
+  (progress?.activities || []).forEach((a) => {
+    if (a?.activity_id) progressMap[a.activity_id] = a;
+  });
+
+  const blocks = (catalog?.blocks || []).map((b) => {
+    const blockId = b?.id ?? b?.block_id ?? null;
+
+    const modules = (b?.modules || []).map((m) => {
+      const moduleId = m?.id ?? m?.module_id ?? null;
+
+      const activities = (m?.activities || []).map((a) => {
+        const activityId = a?.id ?? a?.activity_id ?? null;
+        const p = activityId ? progressMap[activityId] : null;
+
+        return {
+          ...a,
+          id: activityId,
+          order: a?.order ?? a?.order_index ?? a?.orderIndex ?? 999,
+          title: a?.title ?? a?.name ?? "Actividad",
+          completed: p?.status === "completed" || a?.completed === true,
+          score: p?.score ?? a?.score ?? null,
+          status: p?.status ?? a?.status ?? "not_started",
+        };
+      });
+
+      return {
+        ...m,
+        id: moduleId,
+        order: m?.order ?? m?.order_index ?? m?.orderIndex ?? 999,
+        title: m?.title ?? m?.name ?? "Módulo",
+        activities,
+      };
+    });
+
+    return {
+      ...b,
+      id: blockId,
+      order: b?.order ?? b?.order_index ?? b?.orderIndex ?? 999,
+      title: b?.title ?? b?.name ?? "Bloque",
+      modules,
+    };
+  });
+
+  const sortedBlocks = [...blocks].sort((a, b) => (a?.order ?? 999) - (b?.order ?? 999));
+  sortedBlocks.forEach((blk) => {
+    blk.modules = [...(blk.modules || [])].sort((a, b) => (a?.order ?? 999) - (b?.order ?? 999));
+    (blk.modules || []).forEach((m) => {
+      m.activities = [...(m.activities || [])].sort((a, b) => (a?.order ?? 999) - (b?.order ?? 999));
+    });
+  });
+
+  return { program, blocks: sortedBlocks };
+};
+
 const BlockTimeline = ({
-  programId = "soy_voluntario",
-  programs = data?.programs || [],
+  programCode: programCodeProp = null,
+  programId = null,
+  programs = [],
   initialBlockId = null,
   onActivityClick,
 }) => {
-  const program = useMemo(() => {
-    return (programs || []).find((p) => p.id === programId) || programs?.[0] || null;
-  }, [programId, programs]);
+  const [searchParams] = useSearchParams();
 
-  const blocks = useMemo(() => {
-    const list = program?.blocks || [];
-    return [...list].sort((a, b) => (a?.order ?? 999) - (b?.order ?? 999));
-  }, [program]);
+  const programCode = String(
+    programCodeProp || searchParams.get("code") || programId || ""
+  )
+    .trim()
+    .toUpperCase();
+
+  const [program, setProgram] = useState(null);
+  const [blocks, setBlocks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
 
   const programStats = useMemo(() => getProgramStats(blocks), [blocks]);
 
-  const [selectedBlockId, setSelectedBlockId] = useState(
-    initialBlockId || blocks?.[0]?.id || null
-  );
-  const [view, setView] = useState("blocks"); // "blocks" | "course"
+  const [selectedBlockId, setSelectedBlockId] = useState(initialBlockId || null);
+  const [view, setView] = useState("blocks");
 
   useEffect(() => {
+    const run = async () => {
+      try {
+        setLoading(true);
+        setLoadError(null);
+
+        if (!programCode) throw new Error("Falta programCode (ej: SV).");
+
+        const user = auth.currentUser;
+        if (!user) throw new Error("Usuario no autenticado");
+
+        const token = await user.getIdToken(true);
+
+        const catalogUrl = `${BACKEND_URL}/progreso/catalogo/programas/${encodeURIComponent(
+          programCode
+        )}/arbol`;
+
+        const progressUrl = `${BACKEND_URL}/progreso/me/programas/${encodeURIComponent(
+          programCode
+        )}`;
+
+        if (DEBUG) {
+          console.log("📡 catalogUrl:", catalogUrl);
+          console.log("📡 progressUrl:", progressUrl);
+        }
+
+        const [catalogRes, progressRes] = await Promise.all([
+          fetch(catalogUrl, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(progressUrl, { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+
+        if (!catalogRes.ok) {
+          let msg = `No se pudo cargar catálogo (${catalogRes.status})`;
+          try {
+            const ej = await catalogRes.json();
+            msg = ej?.error || ej?.message || msg;
+          } catch {}
+          throw new Error(msg);
+        }
+
+        if (!progressRes.ok) {
+          let msg = `No se pudo cargar progreso (${progressRes.status})`;
+          try {
+            const ej = await progressRes.json();
+            msg = ej?.error || ej?.message || msg;
+          } catch {}
+          throw new Error(msg);
+        }
+
+        const catalog = await catalogRes.json();
+        const progress = await progressRes.json();
+
+        const normalized = normalizeFromBackend({ catalog, progress });
+
+        setProgram(normalized.program || { title: programCode, description: "" });
+        setBlocks(normalized.blocks || []);
+
+        const firstId = normalized.blocks?.[0]?.id || null;
+        const initial = initialBlockId || firstId;
+
+        setSelectedBlockId(initial);
+        setView("blocks");
+      } catch (e) {
+        console.error("❌ BlockTimeline error:", e);
+        setLoadError(e?.message || "Error cargando programa");
+        setProgram(null);
+        setBlocks([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [programCode]);
+
+  useEffect(() => {
+    if (!blocks?.length) return;
+    if (!selectedBlockId) {
+      setSelectedBlockId(blocks?.[0]?.id || null);
+      return;
+    }
     const exists = blocks.some((b) => b.id === selectedBlockId);
     if (!exists) setSelectedBlockId(blocks?.[0]?.id || null);
   }, [blocks, selectedBlockId]);
@@ -151,6 +283,44 @@ const BlockTimeline = ({
   const selectedBlock = useMemo(() => {
     return blocks.find((b) => b.id === selectedBlockId) || null;
   }, [blocks, selectedBlockId]);
+
+  // ✅ NUEVO: CourseTimeline nos reporta cambios para actualizar el estado local del bloque
+  const handleProgressUpdate = ({ blockId, moduleId, activityId, patch }) => {
+    setBlocks((prev) =>
+      prev.map((b) => {
+        if (b.id !== blockId) return b;
+        return {
+          ...b,
+          modules: (b.modules || []).map((m) => {
+            if (m.id !== moduleId) return m;
+            return {
+              ...m,
+              activities: (m.activities || []).map((a) => {
+                if (a.id !== activityId) return a;
+                return { ...a, ...patch };
+              }),
+            };
+          }),
+        };
+      })
+    );
+  };
+
+  if (loading) {
+    return (
+      <Box sx={{ p: 4, textAlign: "center" }}>
+        <Typography>Cargando programa…</Typography>
+      </Box>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <Box sx={{ p: 3 }}>
+        <Typography color="error">{loadError}</Typography>
+      </Box>
+    );
+  }
 
   if (!program) {
     return (
@@ -189,38 +359,33 @@ const BlockTimeline = ({
           overflow: "hidden",
         }}
       >
-
-        
-<Box
-  sx={{
-    position: "absolute",
-    inset: 0,
-    opacity: 1,
-    pointerEvents: "none",
-    border: "6px solid red",
-    borderRadius: 2,
-  }}
-/>
-
-
+        <Box
+          sx={{
+            position: "absolute",
+            inset: 0,
+            opacity: 1,
+            pointerEvents: "none",
+            border: "6px solid red",
+            borderRadius: 2,
+          }}
+        />
 
         <Stack
           direction={{ xs: "column", sm: "row" }}
           spacing={1}
           justifyContent="space-between"
           alignItems={{ xs: "flex-start", sm: "center" }}
-          sx={{ position: "relative", borderRadius: 2,}}
-          
+          sx={{ position: "relative", borderRadius: 2 }}
         >
           <Box>
             <Stack direction="row" spacing={1} alignItems="center">
-              {/* Icon badge (INSTITUCIONAL: rojo sólido/serio) */}
               <Box
                 sx={{
                   width: 34,
                   height: 34,
                   borderRadius: 2,
-                  background: "linear-gradient(135deg, #cc0000 0%, #ff3333 65%, #ff3939ff 100%)",
+                  background:
+                    "linear-gradient(135deg, #cc0000 0%, #ff3333 65%, #ff3939ff 100%)",
                   display: "grid",
                   placeItems: "center",
                   boxShadow: "0 10px 18px rgba(0,0,0,0.10)",
@@ -290,9 +455,7 @@ const BlockTimeline = ({
         </Box>
       </Paper>
 
-      {/* =========================
-          VIEW: COURSE
-         ========================= */}
+      {/* VIEW: COURSE */}
       {view === "course" && (
         <Paper
           elevation={0}
@@ -340,29 +503,22 @@ const BlockTimeline = ({
               .slice()
               .sort((a, b) => (a?.order ?? 999) - (b?.order ?? 999))}
             context={{
-              programId: program?.id,
+              programId: programCode,
               programTitle: safeTitle(program),
               blockId: selectedBlock?.id,
               blockTitle: safeTitle(selectedBlock),
             }}
             onActivityClick={onActivityClick}
+            onProgressUpdate={handleProgressUpdate} // ✅ NUEVO
             hideOuterContainer
           />
         </Paper>
       )}
 
-      {/* =========================
-          VIEW: BLOCKS (NUEVO DISEÑO)
-         ========================= */}
+      {/* VIEW: BLOCKS */}
       {view === "blocks" && (
         <Box sx={{ width: "100%" }}>
-          {/* Línea vertical central (para el efecto "mapa") */}
-          <Box
-            sx={{
-              position: "relative",
-              py: 1,
-            }}
-          >
+          <Box sx={{ position: "relative", py: 1 }}>
             <Box
               sx={{
                 position: "absolute",
@@ -383,9 +539,7 @@ const BlockTimeline = ({
                 const gradient = getBlockGradient(index);
                 const status = getStatusMeta({ locked, completed: stats.completed });
 
-                // Alterna izquierda/derecha para que se sienta dinámico
                 const isLeft = index % 2 === 0;
-
                 const sideJustify = { xs: "flex-start", md: isLeft ? "flex-start" : "flex-end" };
                 const cardWidth = { xs: "100%", md: "48%" };
 
@@ -398,7 +552,6 @@ const BlockTimeline = ({
                       position: "relative",
                     }}
                   >
-                    {/* Nodo central */}
                     <Box
                       sx={{
                         position: "absolute",
@@ -446,7 +599,6 @@ const BlockTimeline = ({
                             },
                       }}
                     >
-                      {/* Banner superior */}
                       <Box
                         sx={{
                           height: 64,
@@ -454,7 +606,6 @@ const BlockTimeline = ({
                           position: "relative",
                         }}
                       >
-                        {/* patrón sutil */}
                         <Box
                           sx={{
                             position: "absolute",
@@ -464,7 +615,7 @@ const BlockTimeline = ({
                             pointerEvents: "none",
                           }}
                         />
-                        {/* Badge bloque # */}
+
                         <Box
                           sx={{
                             position: "absolute",
@@ -488,7 +639,6 @@ const BlockTimeline = ({
                           <span>BLOQUE {block?.order ?? index + 1}</span>
                         </Box>
 
-                        {/* Status pill */}
                         <Box
                           sx={{
                             position: "absolute",
@@ -512,7 +662,6 @@ const BlockTimeline = ({
                         </Box>
                       </Box>
 
-                      {/* Contenido */}
                       <Box sx={{ p: 2.2 }}>
                         <Typography
                           variant="subtitle1"
@@ -530,14 +679,7 @@ const BlockTimeline = ({
                           {block?.description || "Avanza para desbloquear el siguiente bloque."}
                         </Typography>
 
-                        {/* Stats row */}
-                        <Stack
-                          direction="row"
-                          spacing={1}
-                          flexWrap="wrap"
-                          alignItems="center"
-                          sx={{ mb: 1.2 }}
-                        >
+                        <Stack direction="row" spacing={1} flexWrap="wrap" alignItems="center" sx={{ mb: 1.2 }}>
                           <Chip
                             size="small"
                             icon={<FiZap size={14} />}
@@ -570,7 +712,6 @@ const BlockTimeline = ({
                           />
                         </Stack>
 
-                        {/* Barra progreso */}
                         <Box sx={{ mb: 1.2 }}>
                           <LinearProgress
                             variant="determinate"
@@ -600,7 +741,6 @@ const BlockTimeline = ({
 
                         <Divider sx={{ borderColor: COLORS.subtle, mb: 1.2 }} />
 
-                        {/* CTA */}
                         <Stack direction="row" justifyContent="space-between" alignItems="center">
                           <Typography variant="caption" sx={{ color: COLORS.textMuted, fontWeight: 800 }}>
                             {locked

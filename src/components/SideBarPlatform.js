@@ -29,19 +29,19 @@ const NAV_ITEMS_ASPIRANTE = [
   { key: "inicio", label: "INICIO", icon: <FaHome />, path: "/Plataforma" },
   { key: "perfil", label: "MI PERFIL", icon: <FaUser />, path: "/MiPerfil" },
   { key: "trayectoria", label: "TRAYECTORIA", icon: <FaRoute />, path: "/Trayectoria" },
-  { key: "solicitudes", label: "SOLICITUDES", icon: <FaClipboardList />, path: "/Solicitudes" },
-  { key: "calendario", label: "CALENDARIO", icon: <FaCalendarAlt />, path: "/Calendario" },
+  //{ key: "solicitudes", label: "SOLICITUDES", icon: <FaClipboardList />, path: "/Solicitudes" },
+  //{ key: "calendario", label: "CALENDARIO", icon: <FaCalendarAlt />, path: "/Calendario" },
 ];
 
 const NAV_ITEMS_ADMIN = [
   { key: "inicio", label: "INICIO", icon: <FaHome />, path: "/Plataforma" },
   { key: "usuarios", label: "USUARIOS", icon: <FaUsers />, path: "/Usuarios" },
   { key: "documentos", label: "DOCUMENTOS", icon: <FaFolderOpen />, path: "/Documentos" },
-  { key: "trayectorias", label: "TRAYECTORIAS", icon: <FaRoute />, path: "/Trayectorias" },
-  {key: "solicitudes",label: "SOLICITUDES",icon: <FaClipboardCheck />,path: "/Solicitudes",},
-  { key: "progresos",label: "PROGRESOS",icon: <FaChartLine />,path: "/Progresos",},
-  {key: "credenciales",label: "CREDENCIALES",icon: <FaIdBadge />,path: "/Credenciales",},
-   {key: "estadisticas",label: "ESTADISTICAS",icon: <FaChartBar />,path: "/Estadisticas",},
+  //{ key: "trayectorias", label: "TRAYECTORIAS", icon: <FaRoute />, path: "/Trayectorias" },
+  //{key: "solicitudes",label: "SOLICITUDES",icon: <FaClipboardCheck />,path: "/Solicitudes",},
+  //{ key: "progresos",label: "PROGRESOS",icon: <FaChartLine />,path: "/Progresos",},
+  //{key: "credenciales",label: "CREDENCIALES",icon: <FaIdBadge />,path: "/Credenciales",},
+   //{key: "estadisticas",label: "ESTADISTICAS",icon: <FaChartBar />,path: "/Estadisticas",},
 ];
 
 export default function SidebarPlatform({

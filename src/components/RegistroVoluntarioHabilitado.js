@@ -159,6 +159,7 @@ export default function RegistroFormulario() {
   const [activeStep, setActiveStep] = useState(0);
   const [openSnackbar, setOpenSnackbar] = useState(false);
   const [message, setMessage] = useState(""); // mensajes generales
+  const [snackbarSeverity, setSnackbarSeverity] = useState("success"); // success|error|warning|info
   const theme = useTheme();
   const isSmall = useMediaQuery("(max-width:1128px)");
 
@@ -1146,7 +1147,74 @@ export default function RegistroFormulario() {
                   if (!response.ok) {
                     console.error("❌ Error al registrar en backend:", result);
 
-                    // Mapear errores específicos a campos
+                    // 1) Mensaje global (para que no se quede en "what?")
+                    setSnackbarSeverity("error");
+                    setMessage(
+                      result?.message ||
+                        "No se pudo completar el registro. Revisa tu información e inténtalo de nuevo."
+                    );
+                    setSnackbarSeverity("success");
+                  setMessage(message || "Operación completada.");
+                  setOpenSnackbar(true);
+
+                    // 2) Si el error es de un campo que vive en otro step, brinca al step correcto
+                    const FIELD_TO_STEP = {
+                      // Step 0
+                      nombre: 0,
+                      apellidoPat: 0,
+                      apellidoMat: 0,
+                      fechaNacimiento: 0,
+                      paisNacimiento: 0,
+                      edad: 0,
+                      sexo: 0,
+                      curp: 0,
+
+                      // Step 1
+                      estadoCivil: 1,
+                      telefono: 1,
+                      celular: 1,
+                      emergenciaNombre: 1,
+                      emergenciaRelacion: 1,
+                      emergenciaCelular: 1,
+                      emergenciaTelefono: 1,
+
+                      // Step 2
+                      tipoSangre: 2,
+                      rh: 2,
+                      enfermedades: 2,
+                      alergias: 2,
+                      medicamentos: 2,
+                      ejercicio: 2,
+
+                      // Step 3
+                      disponibilidadDias: 3,
+                      turno: 3,
+                      horario: 3,
+                      voluntariadoPrevio: 3,
+                      motivoInteres: 3,
+                      comoSeEntero: 3,
+                      proyectoParticipar: 3,
+                      razonProyecto: 3,
+
+                      // Step 4 (cuenta / legales)
+                      correo: 4,
+                      contraseña: 4,
+                      confirmarContraseña: 4,
+                      avisoPrivacidad: 4,
+                      terminosyCondiciones: 4,
+                    };
+
+                    if (
+                      result?.field &&
+                      Object.prototype.hasOwnProperty.call(
+                        FIELD_TO_STEP,
+                        result.field
+                      )
+                    ) {
+                      setActiveStep(FIELD_TO_STEP[result.field]);
+                    }
+
+                    // 3) Mapear errores específicos a campos (para que se pinte rojo el input)
                     if (result.field) {
                       setError(result.field, {
                         type: "server",
@@ -1164,13 +1232,7 @@ export default function RegistroFormulario() {
                           result.message ||
                           "Ya existe una cuenta registrada con este correo.",
                       });
-                    } else if (result.code === "CURP_EXISTS") {
-                      setError("curp", {
-                        type: "server",
-                        message:
-                          result.message ||
-                          "Ya existe una cuenta registrada con esta CURP.",
-                      });
+                      setActiveStep(4);
                     } else if (result.code === "INVALID_PASSWORD") {
                       setError("contraseña", {
                         type: "server",
@@ -1178,12 +1240,7 @@ export default function RegistroFormulario() {
                           result.message ||
                           "La contraseña no cumple con los requisitos.",
                       });
-                    } else {
-                      alert(
-                        result.message ||
-                          result.error ||
-                          "Ocurrió un error al registrar tu cuenta. Inténtalo nuevamente."
-                      );
+                      setActiveStep(4);
                     }
 
                     return;
@@ -1236,7 +1293,7 @@ export default function RegistroFormulario() {
       >
         <MuiAlert
           onClose={() => setOpenSnackbar(false)}
-          severity="success"
+          severity={snackbarSeverity}
           variant="filled"
           sx={{
             backgroundColor: "white",
