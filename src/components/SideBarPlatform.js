@@ -17,7 +17,9 @@ import {
   FaChartLine,
   FaIdBadge,
   FaChartBar,
+  FaWhatsapp 
 } from "react-icons/fa";
+
 
 import { signOut } from "firebase/auth";
 import { auth } from "../firebase";
@@ -39,7 +41,7 @@ const NAV_ITEMS_ADMIN = [
   { key: "documentos", label: "DOCUMENTOS", icon: <FaFolderOpen />, path: "/Documentos" },
   //{ key: "trayectorias", label: "TRAYECTORIAS", icon: <FaRoute />, path: "/Trayectorias" },
   //{key: "solicitudes",label: "SOLICITUDES",icon: <FaClipboardCheck />,path: "/Solicitudes",},
-  //{ key: "progresos",label: "PROGRESOS",icon: <FaChartLine />,path: "/Progresos",},
+  { key: "progresos",label: "PROGRESOS",icon: <FaChartLine />,path: "/Progresos",},
   //{key: "credenciales",label: "CREDENCIALES",icon: <FaIdBadge />,path: "/Credenciales",},
    //{key: "estadisticas",label: "ESTADISTICAS",icon: <FaChartBar />,path: "/Estadisticas",},
 ];

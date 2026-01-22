@@ -27,7 +27,7 @@ import {
   FaTimesCircle,
 } from "react-icons/fa";
 
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { storage, auth } from "../firebase"; // ✅ igual que FormDocumentos
 
 const API_BASE = "https://vol-backend.onrender.com";
@@ -99,9 +99,9 @@ function statusMeta(status) {
 }
 
 /**
- * Timeline memoizada (no delete)
+ * Timeline memoizada (con delete)
  */
-const TimelineView = memo(function TimelineView({ items }) {
+const TimelineView = memo(function TimelineView({ items, onDelete, deletingId }) {
   const grouped = useMemo(() => {
     const map = new Map();
     (items || []).forEach((it) => {
@@ -128,6 +128,14 @@ const TimelineView = memo(function TimelineView({ items }) {
     const handleOpenFile = () => {
       if (!entry.file_url) return;
       window.open(entry.file_url, "_blank", "noopener,noreferrer");
+    };
+
+    const canDelete = String(entry.status || "").toLowerCase() !== "validated"; // 🔒 mismo criterio que backend
+    const isDeleting = Number(deletingId) === Number(entry.trajectory_id);
+
+    const handleDeleteClick = () => {
+      if (!canDelete) return;
+      onDelete?.(entry);
     };
 
     return (
@@ -174,6 +182,44 @@ const TimelineView = memo(function TimelineView({ items }) {
             overflow: "hidden",
           }}
         >
+          {/* Botón borrar (arriba) */}
+          <Box
+            sx={{
+              display: "flex",
+              justifyContent: { xs: "flex-end", md: isLeft ? "flex-start" : "flex-end" },
+              mb: 0.6,
+            }}
+          >
+            <Tooltip
+              title={
+                canDelete ? "Borrar este registro" : "Este registro ya fue validado y no se puede borrar"
+              }
+              arrow
+            >
+              <span>
+                <IconButton
+                  onClick={handleDeleteClick}
+                  disabled={!canDelete || isDeleting}
+                  sx={{
+                    borderRadius: 2,
+                    border: `1px solid ${colorRojo}55`,
+                    color: canDelete ? colorRojo : "#999",
+                    "&:hover": { backgroundColor: canDelete ? `${colorRojo}10` : "transparent" },
+                    opacity: isDeleting ? 0.75 : 1,
+                  }}
+                  size="small"
+                  aria-label="Borrar"
+                >
+                  {isDeleting ? (
+                    <CircularProgress size={16} sx={{ color: colorRojo }} />
+                  ) : (
+                    <FaTrash size={14} />
+                  )}
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Box>
+
           <Typography
             sx={{
               fontFamily: "'Montserrat', sans-serif",
@@ -408,7 +454,6 @@ const AddTrayectoriaForm = memo(function AddTrayectoriaForm({ onAdd, loading }) 
     const folio = (folioRef.current?.value ?? "").trim();
     const yearNum = Number(yearStr);
 
-    // ✅ yearNum viene de select, pero igual validamos por sanidad mental
     if (!yearNum || yearNum < 1900 || yearNum > new Date().getFullYear() + 1) {
       return setError("Pon un año válido (ej. 2024).");
     }
@@ -597,7 +642,11 @@ const AddTrayectoriaForm = memo(function AddTrayectoriaForm({ onAdd, loading }) 
                 opacity: loading ? 0.85 : 1,
               }}
             >
-              {loading ? <CircularProgress size={18} sx={{ color: "#fff" }} /> : <FaPlus size={16} />}
+              {loading ? (
+                <CircularProgress size={18} sx={{ color: "#fff" }} />
+              ) : (
+                <FaPlus size={16} />
+              )}
             </IconButton>
           </Tooltip>
         </Grid>
@@ -609,7 +658,6 @@ const AddTrayectoriaForm = memo(function AddTrayectoriaForm({ onAdd, loading }) 
 async function uploadFileToFirebase(userUid, file) {
   if (!file) return { file_url: null, storage_path: null };
 
-  // Mismo patrón que FormDocumentos
   const safeName = String(file.name || "archivo").replace(/[^\w.\-() ]+/g, "_");
   const storage_path = `trayectoria/${userUid}/${Date.now()}-${safeName}`;
   const storageRef = ref(storage, storage_path);
@@ -624,6 +672,7 @@ export default function Trayectoria() {
   const [items, setItems] = useState([]);
   const [loadingList, setLoadingList] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
 
@@ -728,6 +777,77 @@ export default function Trayectoria() {
     [loadMine]
   );
 
+  const handleDelete = useCallback(
+    async (entry) => {
+      setError(null);
+      setSuccess(null);
+
+      const ok = window.confirm(
+        "¿Seguro que quieres borrar este elemento de tu trayectoria?\n\nEsto no se puede deshacer."
+      );
+      if (!ok) return;
+
+      try {
+        const user = auth.currentUser;
+        if (!user) {
+          setError("Usuario no autenticado. Inicia sesión e intenta de nuevo.");
+          return;
+        }
+
+        const token = await user.getIdToken();
+        setDeletingId(entry.trajectory_id);
+
+        // 1) Intentar borrar archivo en Firebase (si hay storage_path)
+        //    Nota: si por reglas o permisos falla, NO bloqueamos el borrado del registro.
+        if (entry.storage_path) {
+          try {
+            const storageRef = ref(storage, entry.storage_path);
+            await deleteObject(storageRef);
+          } catch (e) {
+            console.warn("⚠️ No se pudo borrar el archivo en Firebase (continuo igual):", e);
+          }
+        }
+
+        // 2) Borrado lógico en backend
+        const res = await fetch(`${API_BASE}/trayectoria/${entry.trajectory_id}`, {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (res.status === 204) {
+          setSuccess("Registro borrado.");
+          await loadMine();
+          return;
+        }
+
+        // Intentar leer error
+        let payload = null;
+        try {
+          payload = await res.json();
+        } catch {}
+
+        const msg =
+          payload?.error ||
+          (res.status === 409
+            ? "No se puede borrar porque ya fue validado."
+            : "No se pudo borrar el registro.");
+
+        throw new Error(msg);
+      } catch (e) {
+        console.error(e);
+        setError(
+          e?.message ||
+            "No se pudo borrar. Intenta de nuevo más tarde. Si persiste, contacta a plataformacrmsn@gmail.com."
+        );
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [loadMine]
+  );
+
   return (
     <Box
       sx={{
@@ -802,7 +922,7 @@ export default function Trayectoria() {
             </Typography>
           </Paper>
         ) : (
-          <TimelineView items={items} />
+          <TimelineView items={items} onDelete={handleDelete} deletingId={deletingId} />
         )}
       </Box>
     </Box>

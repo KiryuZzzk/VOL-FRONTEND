@@ -13,6 +13,8 @@ import PlatformLayout from "./components/PlatformLayout";
 import Calendario from "./components/Calendario";
 import UsuariosPage from "./pages/Usuarios";
 import Trayectoria from "./pages/Trayectoria";
+import Documentos from "./pages/Documentos";
+import Progresos from "./pages/Progresos";
 
 import {
   BrowserRouter as Router,
@@ -231,6 +233,24 @@ function AppInner() {
               element={
                 <PlatformLayout modOrAdmin={modOrAdmin}>
                   <UsuariosPage />
+                </PlatformLayout>
+              }
+            />
+
+            <Route
+              path="/Documentos"
+              element={
+                <PlatformLayout modOrAdmin={modOrAdmin}>
+                  <Documentos />
+                </PlatformLayout>
+              }
+            />
+
+            <Route
+              path="/Progresos"
+              element={
+                <PlatformLayout modOrAdmin={modOrAdmin}>
+                  <Progresos />
                 </PlatformLayout>
               }
             />

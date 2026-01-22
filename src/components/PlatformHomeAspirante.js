@@ -114,8 +114,8 @@ export default function PlatformHomeAspirante() {
             >
               <strong>¡Bienvenido/a!</strong> 
               <br/> Por favor, completa tu perfil y sube tus documentos.
-                    Dentro de poco podrás empezar tu formación.<br/>
-                    ¡No olvides consultar la plataforma en enero 2026!
+                    ¡Ya puedes comenzar con tu formación!.<br/>
+                  Recuerda que primero verás temas institucionales, posteriormente podrás elegir el programa al cual quieres apoyar, podrás formarte respecto a ello y finalmente, te integrarás a las operaciones. ¡Bienvenido/a!
             </Typography>
           </Box>
         </Box>

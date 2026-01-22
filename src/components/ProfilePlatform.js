@@ -1,4 +1,13 @@
 // src/components/ProfilePlatform.js
+// -----------------------------------------------------------------------------
+// Este componente es el panel de perfil (desktop / sidebar).
+// Antes mostraba "HORAS" y "CURSOS" usando un endpoint legacy.
+// Ahora muestra:
+//   - DÍAS: diferencia (en días) entre la primera actividad iniciada y la última actividad terminada/vista
+//   - ACTIVIDADES: cantidad de activity_id con status = 'completed'
+// Todo se calcula usando el UID de Firebase (se manda el Bearer token como siempre).
+// -----------------------------------------------------------------------------
+
 import React, { useEffect, useState } from "react";
 import { Box, Typography, Button } from "@mui/material";
 import { useNavigate } from "react-router-dom";
@@ -9,17 +18,18 @@ import { onAuthStateChanged } from "firebase/auth";
 
 const BACKEND_URL = "https://vol-backend.onrender.com";
 
-// ---- TEMP / FALLBACK DATA ----
+// ---- FALLBACK DATA (solo para cuando no hay sesión / falla algo) ----
+// Nota: los dejamos porque tu UI ya los usa y así no truena nada visualmente.
 const MOCK_FULL_NAME = "NOMBRE APELLIDO PATERNO APELLIDO MATERNO";
 const MOCK_EMAIL = "usuario.ejemplo@correo.com";
-const MOCK_HOURS = "?";
-const MOCK_COURSES = "?";
+const MOCK_DAYS = "?";
+const MOCK_ACTIVITIES = "?";
 
 export const MOCK_ACHIEVEMENT_TITLE = "¡Día Internacional del Voluntariado!";
 export const MOCK_ACHIEVEMENT_DESC =
   "Tu cuenta estuvo activa en la conmemoración del Día Internacional del Voluntariado del 2025.";
 
-// Helper sencillo tipo MiPerfil
+// Helper: agarra el primer campo que venga con valor (para sobrevivir a APIs “creativas”).
 function firstNonEmpty(obj, keys) {
   if (!obj) return undefined;
   for (const k of keys) {
@@ -29,29 +39,66 @@ function firstNonEmpty(obj, keys) {
   return undefined;
 }
 
+
+/**
+ * ✅ Progreso real desde tu endpoint nuevo:
+ *   GET /progreso/me/resumen
+ *
+ * Respuesta esperada (ejemplo):
+ *  {
+ *    activitiesCompleted: number,
+ *    daysActive: number,
+ *    firstActivityAt: string|null,
+ *    lastActivityAt: string|null
+ *  }
+ *
+ * Ojo: si el usuario no tiene actividad, el backend puede regresar 0s.
+ */
+async function fetchProgressResumen(token) {
+  const url = `${BACKEND_URL}/progreso/me/resumen`;
+  const resp = await axios.get(url, {
+    headers: { Authorization: `Bearer ${token}` },
+    validateStatus: () => true,
+  });
+
+  if (!(resp.status >= 200 && resp.status < 300)) {
+    // No rompemos: solo lanzamos error para que el caller haga fallback
+    const msg =
+      resp?.data?.error ||
+      resp?.data?.message ||
+      `No se pudo cargar resumen (${resp.status})`;
+    throw new Error(msg);
+  }
+
+  return resp.data || {};
+}
+
+
 export default function UserPanel() {
   const navigate = useNavigate();
   const [photoUrl, setPhotoUrl] = useState(null);
   const [loadingPhoto, setLoadingPhoto] = useState(true);
 
-  // 👉 nuevos states para datos reales
+  // Datos reales (perfil + stats)
   const [fullName, setFullName] = useState(MOCK_FULL_NAME);
   const [email, setEmail] = useState(MOCK_EMAIL);
-  const [hours, setHours] = useState(MOCK_HOURS);
-  const [courses, setCourses] = useState(MOCK_COURSES);
 
-  // ---- FOTO + PERFIL BÁSICO + CURSOS COMPLETADOS ----
+  // Antes eran hours/courses; ahora son days/activities.
+  const [days, setDays] = useState(MOCK_DAYS);
+  const [activities, setActivities] = useState(MOCK_ACTIVITIES);
+
+  // ---- FOTO + PERFIL BÁSICO + PROGRESO REAL ----
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setLoadingPhoto(true);
       setPhotoUrl(null);
 
-      // reset a fallback por si no hay sesión
+      // Reset por si no hay sesión
       if (!user) {
         setFullName(MOCK_FULL_NAME);
         setEmail(MOCK_EMAIL);
-        setHours(MOCK_HOURS);
-        setCourses(MOCK_COURSES);
+        setDays(MOCK_DAYS);
+        setActivities(MOCK_ACTIVITIES);
         setLoadingPhoto(false);
         return;
       }
@@ -61,19 +108,12 @@ export default function UserPanel() {
 
         // 1) DOCUMENTOS (para foto)
         try {
-          const respDocs = await axios.get(
-            `${BACKEND_URL}/documentos/mios`,
-            {
-              headers: { Authorization: `Bearer ${token}` },
-              validateStatus: () => true,
-            }
-          );
+          const respDocs = await axios.get(`${BACKEND_URL}/documentos/mios`, {
+            headers: { Authorization: `Bearer ${token}` },
+            validateStatus: () => true,
+          });
 
-          if (
-            respDocs.status >= 200 &&
-            respDocs.status < 300 &&
-            respDocs.data
-          ) {
+          if (respDocs.status >= 200 && respDocs.status < 300 && respDocs.data) {
             const d = respDocs.data;
             const direct =
               d.foto_url ||
@@ -85,8 +125,7 @@ export default function UserPanel() {
             let normalized = null;
             if (typeof direct === "string") normalized = direct;
             if (!normalized && direct && typeof direct === "object") {
-              normalized =
-                direct.url || direct.link || direct.firebase_url || null;
+              normalized = direct.url || direct.link || direct.firebase_url || null;
             }
 
             setPhotoUrl(normalized || null);
@@ -97,95 +136,74 @@ export default function UserPanel() {
 
         // 2) PERFIL BÁSICO (nombre + apellidos + correo)
         try {
-          const respUser = await axios.get(
-            `${BACKEND_URL}/public/validar-usuario`,
-            {
-              headers: { Authorization: `Bearer ${token}` },
-              validateStatus: () => true,
-            }
-          );
+          const respUser = await axios.get(`${BACKEND_URL}/public/validar-usuario`, {
+            headers: { Authorization: `Bearer ${token}` },
+            validateStatus: () => true,
+          });
 
-          if (
-            respUser.status >= 200 &&
-            respUser.status < 300 &&
-            respUser.data
-          ) {
+          if (respUser.status >= 200 && respUser.status < 300 && respUser.data) {
             const basic = respUser.data;
 
             const nombre = firstNonEmpty(basic, ["nombre", "name"]) || "";
             const apPat =
-              firstNonEmpty(basic, [
-                "apellidoPat",
-                "apellido_pat",
-                "apellido_paterno",
-              ]) || "";
+              firstNonEmpty(basic, ["apellidoPat", "apellido_pat", "apellido_paterno"]) ||
+              "";
             const apMat =
-              firstNonEmpty(basic, [
-                "apellidoMat",
-                "apellido_mat",
-                "apellido_materno",
-              ]) || "";
+              firstNonEmpty(basic, ["apellidoMat", "apellido_mat", "apellido_materno"]) ||
+              "";
 
             const correo =
-              firstNonEmpty(basic, [
-                "correo",
-                "email",
-                "correo_electronico",
-              ]) || user.email || "";
+              firstNonEmpty(basic, ["correo", "email", "correo_electronico"]) ||
+              user.email ||
+              "";
 
             const full = [nombre, apPat, apMat].filter(Boolean).join(" ");
 
             setFullName(full || MOCK_FULL_NAME);
             setEmail(correo || MOCK_EMAIL);
-
-            // 🔁 horas: por ahora fijo en 0 / "?"
-            const horas = 0;
-            setHours(
-              horas !== null && horas !== undefined ? horas : MOCK_HOURS
-            );
           } else {
             setFullName(MOCK_FULL_NAME);
             setEmail(user.email || MOCK_EMAIL);
-            setHours(MOCK_HOURS);
           }
         } catch {
           setFullName(MOCK_FULL_NAME);
           setEmail(user.email || MOCK_EMAIL);
-          setHours(MOCK_HOURS);
         }
 
-        // 3) CURSOS COMPLETADOS: /inscripciones/me/completed-count
+        // 3) PROGRESO REAL (endpoint nuevo): DÍAS + ACTIVIDADES
         try {
-          const respCompleted = await axios.get(
-            `${BACKEND_URL}/inscripciones/me/completed-count`,
-            {
-              headers: { Authorization: `Bearer ${token}` },
-              validateStatus: () => true,
-            }
+          const resumen = await fetchProgressResumen(token);
+
+          // ACTIVIDADES completadas (status='completed' en user_activity_progress)
+          const completed =
+            resumen?.activitiesCompleted ??
+            resumen?.completedActivities ??
+            resumen?.completed ??
+            resumen?.count ??
+            0;
+
+          setActivities(
+            Number.isFinite(Number(completed)) ? Number(completed) : MOCK_ACTIVITIES
           );
 
-          if (
-            respCompleted.status >= 200 &&
-            respCompleted.status < 300 &&
-            respCompleted.data &&
-            respCompleted.data.total !== undefined &&
-            respCompleted.data.total !== null
-          ) {
-            const total = respCompleted.data.total;
-            setCourses(
-              Number.isFinite(Number(total)) ? Number(total) : MOCK_COURSES
-            );
-          } else {
-            setCourses(MOCK_COURSES);
-          }
+          // DÍAS activos (rango inclusivo entre primera y última actividad)
+          const daysActive =
+            resumen?.daysActive ?? resumen?.activeDays ?? resumen?.days ?? 0;
+
+          setDays(
+            Number.isFinite(Number(daysActive)) ? Number(daysActive) : MOCK_DAYS
+          );
         } catch {
-          setCourses(MOCK_COURSES);
+          // Si falla el endpoint, no rompemos UI
+          setActivities(MOCK_ACTIVITIES);
+          setDays(MOCK_DAYS);
         }
       } catch {
+        // Token falló, o algo grave
         setFullName(MOCK_FULL_NAME);
         setEmail(MOCK_EMAIL);
-        setHours(MOCK_HOURS);
-        setCourses(MOCK_COURSES);
+        setDays(MOCK_DAYS);
+        setActivities(MOCK_ACTIVITIES);
       } finally {
         setLoadingPhoto(false);
       }
@@ -344,8 +362,9 @@ export default function UserPanel() {
             Ver mi identificación digital
           </Button>
 
-          {/* HORAS / CURSOS */}
+          {/* DÍAS / ACTIVIDADES (reemplaza HORAS / CURSOS) */}
           <Box sx={{ display: "flex", mt: 1.8 }}>
+            {/* DÍAS */}
             <Box
               sx={{
                 flex: 1,
@@ -360,7 +379,7 @@ export default function UserPanel() {
                   fontSize: "1.4rem",
                 }}
               >
-                {hours}
+                {days}
               </Typography>
               <Typography
                 sx={{
@@ -368,10 +387,11 @@ export default function UserPanel() {
                   fontSize: "0.72rem",
                 }}
               >
-                HORAS
+                DÍAS
               </Typography>
             </Box>
 
+            {/* ACTIVIDADES */}
             <Box sx={{ flex: 1, textAlign: "center", pl: 1.4 }}>
               <Typography
                 sx={{
@@ -379,7 +399,7 @@ export default function UserPanel() {
                   fontSize: "1.4rem",
                 }}
               >
-                {courses}
+                {activities}
               </Typography>
               <Typography
                 sx={{
@@ -387,7 +407,7 @@ export default function UserPanel() {
                   fontSize: "0.72rem",
                 }}
               >
-                CURSOS
+                ACTIVIDADES
               </Typography>
             </Box>
           </Box>

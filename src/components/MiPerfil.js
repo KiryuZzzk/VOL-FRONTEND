@@ -22,10 +22,8 @@ import {
   FiUser,
   FiFileText,
   FiExternalLink,
-  FiDownload,
   FiCopy,
   FiAlertCircle,
-  FiCheckCircle,
   FiUploadCloud,
   FiX,
 } from "react-icons/fi";
@@ -98,15 +96,19 @@ function Row({ label, value }) {
   );
 }
 
+/**
+ * ✅ FIX: considera "validado" como éxito (aprobado)
+ */
 function StatusChip({ status }) {
-  const s = (status || "").toString().toLowerCase();
+  const s = (status || "").toString().toLowerCase().trim();
   let color = "default";
   let label = status || "—";
 
-  if (["aprobado", "aprobada", "aceptado"].includes(s)) color = "success";
-  else if (
-    ["rechazado", "rechazada", "invalido", "inválido"].includes(s)
-  )
+  if (s === "validado") label = "aprobado";
+
+  if (["aprobado", "aprobada", "aceptado", "validado", "validada"].includes(s))
+    color = "success";
+  else if (["rechazado", "rechazada", "invalido", "inválido"].includes(s))
     color = "error";
   else if (["pendiente", "en revisión", "revision"].includes(s))
     color = "warning";
@@ -148,14 +150,6 @@ function StatPill({ label, value, color = COLORS.red }) {
   );
 }
 
-function prettyBytes(bytes) {
-  const n = Number(bytes);
-  if (!Number.isFinite(n) || n <= 0) return "—";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const e = Math.floor(Math.log(n) / Math.log(1024));
-  return `${(n / Math.pow(1024, e)).toFixed(1)} ${units[e]}`;
-}
-
 function dateOnly(value) {
   if (!value) return "—";
   const s = String(value);
@@ -163,7 +157,7 @@ function dateOnly(value) {
   try {
     const d = new Date(s);
     if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
-  } catch (e) {
+  } catch {
     // ignore
   }
   return s;
@@ -233,10 +227,7 @@ function normalizeProfile(rawIn = {}) {
       "apellido_mat",
       "apellido_materno",
     ]),
-    fechaNacimiento: firstNonEmpty(raw, [
-      "fechaNacimiento",
-      "fecha_nacimiento",
-    ]),
+    fechaNacimiento: firstNonEmpty(raw, ["fechaNacimiento", "fecha_nacimiento"]),
     curp:
       (firstNonEmpty(raw, ["curp", "CURP"]) || "")
         .toString()
@@ -297,9 +288,7 @@ function normalizeProfile(rawIn = {}) {
     colonia: firstNonEmpty(raw, ["colonia", "municipio"]),
     cp: firstNonEmpty(raw, ["cp", "codigo_postal"]),
     coordinacion: firstNonEmpty(raw, ["coordinacion", "coordinación"]),
-    rol:
-      firstNonEmpty(raw, ["rol"])?.nombre_rol ||
-      firstNonEmpty(raw, ["rol"]),
+    rol: firstNonEmpty(raw, ["rol"])?.nombre_rol || firstNonEmpty(raw, ["rol"]),
     matricula: firstNonEmpty(raw, ["matricula"]),
     estadoValidacion: firstNonEmpty(raw, [
       "estado_validacion",
@@ -315,13 +304,13 @@ function normalizeProfile(rawIn = {}) {
   };
 }
 
+/**
+ * ✅ FIX: usa estado (enum) primero, y mapea validado->aprobado
+ */
 function normalizeDoc(raw) {
   const id =
-    raw?.id ??
-    raw?.documento_id ??
-    raw?.doc_id ??
-    raw?.uuid ??
-    undefined;
+    raw?.id ?? raw?.documento_id ?? raw?.doc_id ?? raw?.uuid ?? undefined;
+
   const name =
     raw?.nombre ??
     raw?.name ??
@@ -337,22 +326,28 @@ function normalizeDoc(raw) {
     raw?.documento_url ??
     null;
 
-  const size =
-    raw?.size ??
-    raw?.tamaño ??
-    raw?.tamano ??
-    raw?.bytes ??
-    undefined;
+  const size = raw?.size ?? raw?.tamaño ?? raw?.tamano ?? raw?.bytes ?? undefined;
 
-  const status =
+  // 🔥 primero intenta estado/estatus/status
+  let status =
     raw?.estatus ??
     raw?.status ??
     raw?.estado ??
-    raw?.aprobado === true
-      ? "aprobado"
-      : raw?.aprobado === false
-      ? "rechazado"
-      : raw?.aprobado ?? "pendiente";
+    undefined;
+
+  // fallback: boolean aprobado (legacy)
+  if (status === undefined || status === null || status === "") {
+    status =
+      raw?.aprobado === true
+        ? "aprobado"
+        : raw?.aprobado === false
+        ? "rechazado"
+        : raw?.aprobado ?? "pendiente";
+  }
+
+  // normaliza "validado" a "aprobado"
+  const s = (status || "").toString().toLowerCase().trim();
+  if (s === "validado" || s === "validada") status = "aprobado";
 
   return {
     id,
@@ -362,18 +357,18 @@ function normalizeDoc(raw) {
     status,
     notes: raw?.nota ?? raw?.observaciones ?? "",
     uploadedAt:
-      raw?.fecha ??
-      raw?.created_at ??
-      raw?.updated_at ??
-      raw?.subidoEn ??
-      null,
+      raw?.fecha ?? raw?.created_at ?? raw?.updated_at ?? raw?.subidoEn ?? null,
     raw,
   };
 }
 
+/**
+ * ✅ FIX: al detectar *_url, también adjunta *_estado si existe
+ */
 function extractDocsArrayFlexible(data) {
   if (!data) return [];
   if (Array.isArray(data)) return data;
+
   for (const k of [
     "documentos",
     "docs",
@@ -386,12 +381,14 @@ function extractDocsArrayFlexible(data) {
   ]) {
     if (Array.isArray(data?.[k])) return data[k];
   }
+
   const keys = Object.keys(data || {});
   if (keys.some((k) => k.endsWith("_url"))) {
     const out = [];
     for (const k of keys) {
       if (!k.endsWith("_url")) continue;
       const base = k.replace(/_url$/, "");
+
       const url =
         data[k] ??
         data[`${base}_link`] ??
@@ -406,13 +403,21 @@ function extractDocsArrayFlexible(data) {
         data[`${base}Approved`] ??
         false;
 
-      if (url || approved !== undefined) {
+      const estado =
+        data[`${base}_estado`] ??
+        data[`${base}Estado`] ??
+        data[`${base}_status`] ??
+        data[`${base}Status`] ??
+        undefined;
+
+      if (url || approved !== undefined || estado !== undefined) {
         out.push(
           normalizeDoc({
             id: base,
             nombre: base,
             url,
-            aprobado: approved,
+            estado, // 👈 clave
+            aprobado: approved, // fallback
             fecha: data[`${base}_fecha`] ?? data[`${base}_uploaded_at`] ?? null,
             nota: data[`${base}_nota`] ?? data[`${base}_observaciones`] ?? "",
           })
@@ -421,6 +426,7 @@ function extractDocsArrayFlexible(data) {
     }
     return out;
   }
+
   return [];
 }
 
@@ -623,19 +629,23 @@ export default function MiPerfil({ user: userProp }) {
     },
   ];
 
+  /**
+   * ✅ FIX: stats cuentan "validado" como aprobado (porque normalizeDoc lo vuelve "aprobado")
+   */
   const docsStats = useMemo(() => {
     let pendiente = 0;
     let aprobado = 0;
     let rechazado = 0;
+
     for (const d of documents) {
-      const s = (d.status || "").toString().toLowerCase();
-      if (["aprobado", "aprobada", "aceptado"].includes(s)) aprobado++;
-      else if (
-        ["rechazado", "rechazada", "invalido", "inválido"].includes(s)
-      )
+      const s = (d.status || "").toString().toLowerCase().trim();
+      if (["aprobado", "aprobada", "aceptado", "validado", "validada"].includes(s))
+        aprobado++;
+      else if (["rechazado", "rechazada", "invalido", "inválido"].includes(s))
         rechazado++;
       else pendiente++;
     }
+
     return {
       total: documents.length,
       pendiente,
@@ -698,10 +708,7 @@ export default function MiPerfil({ user: userProp }) {
             <FiUser />
           </Avatar>
           <Box>
-            <Typography
-              variant="h4"
-              sx={{ fontWeight: 900, letterSpacing: 0.5 }}
-            >
+            <Typography variant="h4" sx={{ fontWeight: 900, letterSpacing: 0.5 }}>
               Mi perfil
             </Typography>
             <Typography sx={{ color: "#555", fontSize: 14 }}>
@@ -758,9 +765,7 @@ export default function MiPerfil({ user: userProp }) {
               ) : profileError ? (
                 <Typography color="error">{profileError}</Typography>
               ) : !profile ? (
-                <Typography variant="body2">
-                  No se encontró información de perfil.
-                </Typography>
+                <Typography variant="body2">No se encontró información de perfil.</Typography>
               ) : (
                 <Box>
                   <Row label="Nombre completo" value={displayName} />
@@ -778,12 +783,14 @@ export default function MiPerfil({ user: userProp }) {
                           label={P.estadoValidacion}
                           size="small"
                           color={
-                            ["aprobado", "aprobada"].includes(
-                              (P.estadoValidacion || "")
-                                .toString()
-                                .toLowerCase()
+                            ["aprobado", "aprobada", "activo"].includes(
+                              (P.estadoValidacion || "").toString().toLowerCase().trim()
                             )
                               ? "success"
+                              : ["rechazado"].includes(
+                                  (P.estadoValidacion || "").toString().toLowerCase().trim()
+                                )
+                              ? "error"
                               : "warning"
                           }
                           sx={{ textTransform: "uppercase", fontSize: 11 }}
@@ -806,36 +813,16 @@ export default function MiPerfil({ user: userProp }) {
                 <Typography color="error">{docsError}</Typography>
               ) : (
                 <Box>
-                  <Typography
-                    variant="body2"
-                    sx={{ color: "#555", mb: 2, maxWidth: 520 }}
-                  >
-                    Aquí se muestra un resumen del estado de tus documentos
-                    registrados en el sistema. Este resumen es orientativo; la
-                    validación final depende de tu área de capacitación.
+                  <Typography variant="body2" sx={{ color: "#555", mb: 2, maxWidth: 520 }}>
+                    Aquí se muestra un resumen del estado de tus documentos registrados en el sistema.
+                    Este resumen es orientativo; la validación final depende de tu área de capacitación.
                   </Typography>
 
-                  <Stack
-                    direction="row"
-                    spacing={1.5}
-                    sx={{ flexWrap: "wrap", mb: 2 }}
-                  >
+                  <Stack direction="row" spacing={1.5} sx={{ flexWrap: "wrap", mb: 2 }}>
                     <StatPill label="Total" value={docsStats.total} />
-                    <StatPill
-                      label="Aprobados"
-                      value={docsStats.aprobado}
-                      color="#00aa55"
-                    />
-                    <StatPill
-                      label="Pendientes"
-                      value={docsStats.pendiente}
-                      color="#f0a500"
-                    />
-                    <StatPill
-                      label="Rechazados"
-                      value={docsStats.rechazado}
-                      color="#d00000"
-                    />
+                    <StatPill label="Aprobados" value={docsStats.aprobado} color="#00aa55" />
+                    <StatPill label="Pendientes" value={docsStats.pendiente} color="#f0a500" />
+                    <StatPill label="Rechazados" value={docsStats.rechazado} color="#d00000" />
                   </Stack>
 
                   {docsStats.total === 0 ? (
@@ -848,8 +835,8 @@ export default function MiPerfil({ user: userProp }) {
                       }}
                     >
                       <Typography variant="body2" sx={{ color: "#333" }}>
-                        Aún no has cargado documentos en el sistema. Te
-                        recomendamos completar tu información lo antes posible.
+                        Aún no has cargado documentos en el sistema. Te recomendamos completar tu
+                        información lo antes posible.
                       </Typography>
                     </Box>
                   ) : null}
@@ -866,12 +853,7 @@ export default function MiPerfil({ user: userProp }) {
                 <Stack spacing={2}>
                   {bloques.map((b, idx) => (
                     <Box key={idx}>
-                      <Stack
-                        direction="row"
-                        spacing={1}
-                        alignItems="center"
-                        sx={{ mb: 0.5 }}
-                      >
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
                         <Box
                           sx={{
                             width: 24,
@@ -884,10 +866,7 @@ export default function MiPerfil({ user: userProp }) {
                         >
                           {b.icon}
                         </Box>
-                        <Typography
-                          variant="subtitle2"
-                          sx={{ fontWeight: 700, color: "#444" }}
-                        >
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700, color: "#444" }}>
                           {b.titulo}
                         </Typography>
                       </Stack>
@@ -911,12 +890,8 @@ export default function MiPerfil({ user: userProp }) {
               alignItems="center"
               sx={{ mb: 2, gap: 1, textAlign: "center" }}
             >
-              <Typography
-                variant="body2"
-                sx={{ color: "#555", maxWidth: 400 }}
-              >
-                Revisa el listado de documentos registrados y, si hace falta,
-                sube o actualiza tu información.
+              <Typography variant="body2" sx={{ color: "#555", maxWidth: 400 }}>
+                Revisa el listado de documentos registrados y, si hace falta, sube o actualiza tu información.
               </Typography>
 
               <Button
@@ -963,12 +938,8 @@ export default function MiPerfil({ user: userProp }) {
               </Box>
             ) : (
               <Stack spacing={1.5}>
-                <Typography
-                  variant="caption"
-                  sx={{ color: "#666", mb: 0.5 }}
-                >
-                  Nota: aquí se muestran los <strong>enlaces</strong> de tus
-                  documentos.
+                <Typography variant="caption" sx={{ color: "#666", mb: 0.5 }}>
+                  Nota: aquí se muestran los <strong>enlaces</strong> de tus documentos.
                 </Typography>
 
                 {documents.map((doc) => (
@@ -985,13 +956,7 @@ export default function MiPerfil({ user: userProp }) {
                       alignItems: "center",
                     }}
                   >
-                    <Box
-                      sx={{
-                        color: COLORS.red,
-                        display: "grid",
-                        placeItems: "center",
-                      }}
-                    >
+                    <Box sx={{ color: COLORS.red, display: "grid", placeItems: "center" }}>
                       <FiFileText />
                     </Box>
 
@@ -1010,18 +975,10 @@ export default function MiPerfil({ user: userProp }) {
                         {doc.name || "Documento"}
                       </Typography>
 
-                      <Stack
-                        direction="row"
-                        spacing={1}
-                        alignItems="center"
-                        sx={{ mt: 0.5, flexWrap: "wrap" }}
-                      >
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.5, flexWrap: "wrap" }}>
                         <StatusChip status={doc.status} />
                         {doc.notes ? (
-                          <Typography
-                            variant="caption"
-                            sx={{ color: "#444" }}
-                          >
+                          <Typography variant="caption" sx={{ color: "#444" }}>
                             {doc.notes}
                           </Typography>
                         ) : null}
@@ -1035,13 +992,7 @@ export default function MiPerfil({ user: userProp }) {
                             size="small"
                             variant="outlined"
                             disabled={!doc.url}
-                            onClick={() =>
-                              window.open(
-                                doc.url,
-                                "_blank",
-                                "noopener,noreferrer"
-                              )
-                            }
+                            onClick={() => window.open(doc.url, "_blank", "noopener,noreferrer")}
                             sx={{
                               minWidth: 0,
                               px: 1.25,
@@ -1116,12 +1067,7 @@ export default function MiPerfil({ user: userProp }) {
           </IconButton>
         </DialogTitle>
 
-        <DialogContent
-          dividers
-          sx={{
-            backgroundColor: COLORS.bg,
-          }}
-        >
+        <DialogContent dividers sx={{ backgroundColor: COLORS.bg }}>
           <FormDocumentos />
         </DialogContent>
       </Dialog>

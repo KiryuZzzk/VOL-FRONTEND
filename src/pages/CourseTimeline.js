@@ -19,6 +19,7 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
+  Divider
 } from "@mui/material";
 import {
   FiCheckCircle,
@@ -34,9 +35,14 @@ import {
   FiX,
   FiArrowLeft,
 } from "react-icons/fi";
+import { FaWhatsapp } from "react-icons/fa";
+import { QRCodeCanvas } from "qrcode.react";
+
 
 import { auth, storage } from "../firebase";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+
+import SolicitudViewer from "../components/SolicitudViewer";
 
 const COLORS = {
   bg: "#f5f0ff",
@@ -1734,7 +1740,7 @@ const ActivityViewer = ({
 
   const { activity } = selectedActivity;
   const type = activity?.type;
-  const config = activity?.config || {};
+  const config = safeParseConfig(activity?.config ?? activity?.config_json ?? activity?.configJson ?? {});
   const displayName = activity?.title || activity?.name || "Actividad sin título";
 
   if (type === "video") {
@@ -1747,7 +1753,7 @@ const ActivityViewer = ({
           {displayName}
         </Typography>
         <Typography variant="body2" sx={{ color: COLORS.textMuted, mb: 1 }}>
-          Recurso en video (se marca al darle play)
+          Recurso en video
         </Typography>
 
         <YouTubePlayer videoId={videoId} title={displayName} onPlayOnce={onMarkVideoPlayed} />
@@ -1829,117 +1835,121 @@ const ActivityViewer = ({
   }
 
   if (type === "url") {
-    const url = config.url;
-    const allowEmbed = config.allowEmbed !== false;
+  const url = config.url;
+  const mode = config.mode;
+  const platform = config.platform;
 
+  const isCtaQr = mode === "cta_qr";
+  const isWhatsapp = platform === "whatsapp";
+
+  const buttonColor = isWhatsapp ? "#25D366" : COLORS.red;
+  const buttonHover = isWhatsapp ? "#1ebe5d" : COLORS.redDark;
+
+  const Icon = isWhatsapp ? FaWhatsapp : FiExternalLink;
+
+  if (!url) {
+    return (
+      <Typography variant="body2" sx={{ color: COLORS.textMuted }}>
+        Falta configurar <code>config.url</code>.
+      </Typography>
+    );
+  }
+
+  // ======================
+  // ✅ CTA + QR MODE
+  // ======================
+  if (isCtaQr) {
     return (
       <Box>
         <Typography variant="subtitle2" sx={{ fontWeight: 700, color: COLORS.textMain, mb: 0.5 }}>
           {displayName}
         </Typography>
-        <Typography variant="body2" sx={{ color: COLORS.textMuted, mb: 1 }}>
-          Recurso externo
+
+        <Typography variant="body2" sx={{ color: COLORS.textMuted, mb: 2 }}>
+          Da clic en el botón para continuar.
         </Typography>
 
-        {url ? (
+        <Button
+          fullWidth
+          size="large"
+          variant="contained"
+          startIcon={<Icon size={22} />}
+          onClick={() => {
+            window.open(url, "_blank", "noopener,noreferrer");
+            onMarkCompleteUrl?.();
+          }}
+          sx={{
+            py: 1.4,
+            borderRadius: 2,
+            textTransform: "none",
+            fontWeight: 900,
+            fontSize: 16,
+            backgroundColor: buttonColor,
+            "&:hover": { backgroundColor: buttonHover },
+          }}
+        >
+          {config.ctaLabel || "Continuar"}
+        </Button>
+
+        {config.showQr !== false && (
           <>
-            <Stack direction="row" spacing={1.5} mb={1.5} flexWrap="wrap">
-              {allowEmbed && (
-                <Button
-                  variant="contained"
-                  size="small"
-                  onClick={() => {
-                    setIframeError(false);
-                    setUrlModalOpen(true);
-                    onMarkCompleteUrl?.();
-                  }}
-                  sx={{ backgroundColor: COLORS.red, "&:hover": { backgroundColor: COLORS.redDark } }}
-                  endIcon={<FiExternalLink size={14} />}
-                >
-                  Ver dentro de la plataforma
-                </Button>
-              )}
+            <Divider sx={{ my: 2.5 }} />
 
-              <Button
-                variant="outlined"
-                size="small"
-                href={url}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={() => onMarkCompleteUrl?.()}
-                endIcon={<FiExternalLink size={14} />}
+            <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>
+              ¿No se abre el botón? Escanea el QR
+            </Typography>
+
+            <Box sx={{ display: "flex", justifyContent: "center", mt: 1 }}>
+              <Box
                 sx={{
-                  borderColor: COLORS.subtle,
-                  color: COLORS.textMain,
-                  "&:hover": { borderColor: COLORS.red, color: COLORS.redDark },
+                  bgcolor: "#fff",
+                  p: 2,
+                  borderRadius: 2,
+                  boxShadow: 1,
                 }}
               >
-                Abrir en pestaña nueva
-              </Button>
-            </Stack>
-
-            {allowEmbed && (
-              <Dialog
-                open={urlModalOpen}
-                onClose={() => setUrlModalOpen(false)}
-                fullWidth
-                maxWidth="lg"
-                sx={{
-                  zIndex: 99999,
-                  "& .MuiBackdrop-root": { zIndex: 99998 },
-                  "& .MuiDialog-container": { zIndex: 99999 },
-                  "& .MuiDialog-paper": { zIndex: 999999 },
-                }}
-              >
-                <DialogTitle
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    pr: 1,
-                    backgroundColor: COLORS.whiteSoft,
-                  }}
-                >
-                  <Typography variant="subtitle2" sx={{ fontWeight: 700, color: COLORS.textMain }}>
-                    {displayName}
-                  </Typography>
-                  <IconButton size="small" onClick={() => setUrlModalOpen(false)}>
-                    <FiX size={18} />
-                  </IconButton>
-                </DialogTitle>
-
-                <DialogContent dividers sx={{ p: 0, backgroundColor: "#000000" }}>
-                  {!iframeError && (
-                    <Box sx={{ width: "100%", height: "70vh" }}>
-                      <Box
-                        component="iframe"
-                        src={url}
-                        title={displayName}
-                        sx={{ border: 0, width: "100%", height: "100%" }}
-                        onError={() => setIframeError(true)}
-                      />
-                    </Box>
-                  )}
-
-                  {iframeError && (
-                    <Box sx={{ p: 2, backgroundColor: COLORS.whiteSoft }}>
-                      <Typography variant="body2" sx={{ color: COLORS.textMuted }}>
-                        Este recurso no puede mostrarse embebido. Ábrelo en una pestaña nueva.
-                      </Typography>
-                    </Box>
-                  )}
-                </DialogContent>
-              </Dialog>
-            )}
+                <QRCodeCanvas value={url} size={220} includeMargin />
+              </Box>
+            </Box>
           </>
-        ) : (
-          <Typography variant="body2" sx={{ color: COLORS.textMuted }}>
-            Falta configurar <code>config.url</code>.
-          </Typography>
         )}
       </Box>
     );
   }
+
+  // ======================
+  // 🔁 DEFAULT URL MODE
+  // ======================
+  return (
+    <Box>
+      <Typography variant="subtitle2" sx={{ fontWeight: 700, color: COLORS.textMain, mb: 0.5 }}>
+        {displayName}
+      </Typography>
+
+      <Typography variant="body2" sx={{ color: COLORS.textMuted, mb: 1 }}>
+        Recurso externo
+      </Typography>
+
+      <Button
+        variant="outlined"
+        size="small"
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={() => onMarkCompleteUrl?.()}
+        endIcon={<FiExternalLink size={14} />}
+        sx={{
+          borderColor: COLORS.subtle,
+          color: COLORS.textMain,
+          "&:hover": { borderColor: COLORS.red, color: COLORS.redDark },
+        }}
+      >
+        Abrir enlace
+      </Button>
+    </Box>
+  );
+}
+
 
   if (type === "path") {
     return (
@@ -1963,6 +1973,10 @@ const ActivityViewer = ({
       />
     );
   }
+
+    if (type === "solicitud") {
+    return <SolicitudViewer activity={activity} />
+    }
 
   if (type === "quiz" || type === "examen") {
     return <QuizViewer activity={activity} onComplete={onMarkComplete} />;
@@ -2103,7 +2117,7 @@ const CourseTimeline = ({
     if (!type) return true;
     if (type === "video") return false;
     if (type === "path") return false;
-    if (type === "scorm") return false;
+    if (type === "scorm") return true;
     if (type === "practica") return true;
     if (type === "reading" || type === "lectura") return false;
     if (type === "url") return false;
@@ -2111,6 +2125,12 @@ const CourseTimeline = ({
     if (type === "docs") return false;
     return true;
   };
+
+  // Solo para actividades tipo "path": si ya están completadas, NO se pueden volver a abrir ni activar.
+  // (Todas las demás actividades se comportan igual que antes.)
+  const isCompletedPathLocked = (activity) =>
+    String(activity?.type || "").toLowerCase() === "path" && activity?.completed === true;
+
 
   const handleActivityClick = async (module, activity) => {
     const activityIdNum = Number(activity?.id);
@@ -2128,6 +2148,13 @@ const CourseTimeline = ({
 
     const type = activity?.type;
     const isCompleted = activity?.completed === true;
+
+    // 🚫 Regla solicitada: si es un "path" y ya está completado, no permitimos reabrir ni activar.
+    // Esto se hace aquí (lógica) para que aunque alguien dispare el handler por otra ruta, igual se bloquee.
+    if (isCompletedPathLocked(activity)) {
+      return;
+    }
+
 
     // UX: Para final_quiz NO permitimos re-iniciar si ya está completado o si backend bloquea por intentos.
     // DEV: La validación real debe ser server-side (iniciarActividad) para evitar bypass en multi-dispositivo.
@@ -2628,6 +2655,12 @@ const CourseTimeline = ({
                         .map((activity) => {
                           const label = activity?.title || activity?.name || "Actividad sin título";
 
+                          // Si esta actividad es "path" y ya está completada, la tratamos como "bloqueada".
+                          // Esto NO afecta a otros tipos de actividad.
+                          const pathLocked = isCompletedPathLocked(activity);
+                          const canOpen = !locked && !pathLocked;
+
+
                           return (
                             <Stack
                               key={activity?.id || `${label}-${activity?.order ?? ""}`}
@@ -2638,10 +2671,15 @@ const CourseTimeline = ({
                                 pl: 0.5,
                                 py: 0.45,
                                 borderRadius: 2,
-                                cursor: locked ? "not-allowed" : "pointer",
-                                "&:hover": locked ? {} : { backgroundColor: COLORS.subtle },
+
+                                // Cursor y hover coherentes con el bloqueo:
+                                // - locked: bloqueado por prerequisitos/estado general
+                                // - pathLocked: bloqueado SOLO si es "path" y ya está completado
+                                cursor: canOpen ? "pointer" : "not-allowed",
+                                opacity: pathLocked ? 0.65 : 1,
+                                "&:hover": canOpen ? { backgroundColor: COLORS.subtle } : {},
                               }}
-                              onClick={() => !locked && handleActivityClick(module, activity)}
+                              onClick={() => canOpen && handleActivityClick(module, activity)}
                             >
                               <Checkbox
                                 checked={!!activity?.completed}
@@ -2677,13 +2715,19 @@ const CourseTimeline = ({
                                 </Typography>
                               </Box>
 
-                              {!locked && (
+                              {canOpen ? (
                                 <Tooltip title="Abrir actividad">
                                   <Box sx={{ color: COLORS.red }}>
                                     <FiPlayCircle size={18} />
                                   </Box>
                                 </Tooltip>
-                              )}
+                              ) : pathLocked ? (
+                                <Tooltip title='Ya elegiste un camino. Esta actividad no se puede reabrir.'>
+                                  <Box sx={{ color: COLORS.textMuted }}>
+                                    <FiLock size={18} />
+                                  </Box>
+                                </Tooltip>
+                              ) : null}
                             </Stack>
                           );
                         })}

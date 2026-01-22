@@ -1,4 +1,15 @@
 // src/components/ProfilePlatformSmall.jsx
+// -----------------------------------------------------------------------------
+// Este componente es la versión “small” (móvil / cards full width).
+// Antes traía MOCK_* y mostraba HORAS/CURSOS.
+// Ahora iguala la lógica del componente grande:
+//
+//   - DÍAS: rango inclusivo entre la primera actividad iniciada y la última terminada/vista
+//   - ACTIVIDADES: total de activity_id con status='completed'
+//
+// Carga también foto y perfil básico desde backend.
+// -----------------------------------------------------------------------------
+
 import React, { useEffect, useState } from "react";
 import { Box, Typography, Button } from "@mui/material";
 import { useNavigate } from "react-router-dom";
@@ -9,15 +20,101 @@ import { onAuthStateChanged } from "firebase/auth";
 
 const BACKEND_URL = "https://vol-backend.onrender.com";
 
-// ---- TEMP DATA (igual idea que el grande) ----
+// Fallbacks (cuando no hay sesión / falla backend)
 const MOCK_FULL_NAME = "NOMBRE APELLIDO PATERNO APELLIDO MATERNO";
 const MOCK_EMAIL = "usuario.ejemplo@correo.com";
-const MOCK_HOURS = 24;
-const MOCK_COURSES = 3;
+const MOCK_DAYS = "?";
+const MOCK_ACTIVITIES = "?";
 
 const MOCK_ACHIEVEMENT_TITLE = "¡Soy Voluntario!";
 const MOCK_ACHIEVEMENT_DESC =
   "Termina tu Formación Institucional y culmina con el primer paso para ser Voluntario.";
+
+// Helper: primer valor no vacío de un conjunto de keys
+function firstNonEmpty(obj, keys) {
+  if (!obj) return undefined;
+  for (const k of keys) {
+    const v = obj[k];
+    if (v !== undefined && v !== null && v !== "") return v;
+  }
+  return undefined;
+}
+
+// Helper: parse seguro de fechas
+function toDate(value) {
+  if (!value) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+// Estadísticas desde user_activity_progress
+function computeActivityStats(rows) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+
+  const completedCount = safeRows.reduce((acc, r) => {
+    const st = String(r?.status || "").toLowerCase();
+    return st === "completed" ? acc + 1 : acc;
+  }, 0);
+
+  let minDate = null;
+  let maxDate = null;
+
+  for (const r of safeRows) {
+    const started = toDate(r?.started_at);
+    const completed = toDate(r?.completed_at);
+    const lastSeen = toDate(r?.last_seen_at);
+
+    const candidateStart = started || completed || lastSeen;
+    const candidateEnd = completed || lastSeen || started;
+
+    if (candidateStart) {
+      if (!minDate || candidateStart < minDate) minDate = candidateStart;
+    }
+    if (candidateEnd) {
+      if (!maxDate || candidateEnd > maxDate) maxDate = candidateEnd;
+    }
+  }
+
+  let days = null;
+  if (minDate && maxDate) {
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    const diffMs = maxDate.getTime() - minDate.getTime();
+    const diffDays = Math.floor(diffMs / MS_PER_DAY);
+    days = Math.max(1, diffDays + 1);
+  }
+
+  return { completedCount, days };
+}
+
+// Igual que en el grande: probamos varios endpoints hasta encontrar uno que responda.
+async function fetchProgressRows(token) {
+  const endpoints = [
+    `${BACKEND_URL}/progreso/me/activity-progress`,
+    `${BACKEND_URL}/progreso/me/activity-progress/list`,
+    `${BACKEND_URL}/progreso/me/progress`,
+    `${BACKEND_URL}/progreso/me`,
+  ];
+
+  for (const url of endpoints) {
+    try {
+      const resp = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        validateStatus: () => true,
+      });
+
+      if (!(resp.status >= 200 && resp.status < 300)) continue;
+
+      const data = resp.data;
+      if (Array.isArray(data)) return data;
+      if (data && Array.isArray(data.rows)) return data.rows;
+      if (data && Array.isArray(data.data)) return data.data;
+    } catch (_) {
+      // seguimos intentando
+    }
+  }
+
+  return null;
+}
 
 export default function ProfilePlatformSmall() {
   const navigate = useNavigate();
@@ -25,47 +122,124 @@ export default function ProfilePlatformSmall() {
   const [photoUrl, setPhotoUrl] = useState(null);
   const [loadingPhoto, setLoadingPhoto] = useState(true);
 
-  // Carga de foto desde /documentos/mios (mismo enfoque que en ProfilePlatform)
+  const [fullName, setFullName] = useState(MOCK_FULL_NAME);
+  const [email, setEmail] = useState(MOCK_EMAIL);
+
+  const [days, setDays] = useState(MOCK_DAYS);
+  const [activities, setActivities] = useState(MOCK_ACTIVITIES);
+
+  // Carga de foto + perfil + stats reales
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setLoadingPhoto(true);
       setPhotoUrl(null);
+
+      if (!user) {
+        setFullName(MOCK_FULL_NAME);
+        setEmail(MOCK_EMAIL);
+        setDays(MOCK_DAYS);
+        setActivities(MOCK_ACTIVITIES);
+        setLoadingPhoto(false);
+        return;
+      }
+
       try {
-        if (!user) {
-          setLoadingPhoto(false);
-          return;
-        }
         const token = await user.getIdToken(true);
 
-        const resp = await axios.get(`${BACKEND_URL}/documentos/mios`, {
-          headers: { Authorization: `Bearer ${token}` },
-          validateStatus: () => true,
-        });
+        // 1) Foto
+        try {
+          const resp = await axios.get(`${BACKEND_URL}/documentos/mios`, {
+            headers: { Authorization: `Bearer ${token}` },
+            validateStatus: () => true,
+          });
 
-        if (resp.status >= 200 && resp.status < 300 && resp.data) {
-          const d = resp.data;
+          if (resp.status >= 200 && resp.status < 300 && resp.data) {
+            const d = resp.data;
 
-          const direct =
-            d.foto_url ||
-            d.fotoUrl ||
-            d.foto ||
-            d.fotoFirebaseUrl ||
-            d.foto_firebase_url;
+            const direct =
+              d.foto_url ||
+              d.fotoUrl ||
+              d.foto ||
+              d.fotoFirebaseUrl ||
+              d.foto_firebase_url;
 
-          let normalized = null;
-          if (direct && typeof direct === "string") normalized = direct;
-          if (!normalized && direct && typeof direct === "object") {
-            normalized = direct.url || direct.link || direct.firebase_url || null;
+            let normalized = null;
+            if (direct && typeof direct === "string") normalized = direct;
+            if (!normalized && direct && typeof direct === "object") {
+              normalized = direct.url || direct.link || direct.firebase_url || null;
+            }
+
+            setPhotoUrl(normalized || null);
           }
-
-          setPhotoUrl(normalized || null);
+        } catch (_) {
+          setPhotoUrl(null);
         }
-      } catch (_) {
-        // fallback silencioso
+
+        // 2) Perfil básico
+        try {
+          const respUser = await axios.get(`${BACKEND_URL}/public/validar-usuario`, {
+            headers: { Authorization: `Bearer ${token}` },
+            validateStatus: () => true,
+          });
+
+          if (respUser.status >= 200 && respUser.status < 300 && respUser.data) {
+            const basic = respUser.data;
+
+            const nombre = firstNonEmpty(basic, ["nombre", "name"]) || "";
+            const apPat =
+              firstNonEmpty(basic, ["apellidoPat", "apellido_pat", "apellido_paterno"]) ||
+              "";
+            const apMat =
+              firstNonEmpty(basic, ["apellidoMat", "apellido_mat", "apellido_materno"]) ||
+              "";
+
+            const correo =
+              firstNonEmpty(basic, ["correo", "email", "correo_electronico"]) ||
+              user.email ||
+              "";
+
+            const full = [nombre, apPat, apMat].filter(Boolean).join(" ");
+
+            setFullName(full || MOCK_FULL_NAME);
+            setEmail(correo || MOCK_EMAIL);
+          } else {
+            setFullName(MOCK_FULL_NAME);
+            setEmail(user.email || MOCK_EMAIL);
+          }
+        } catch (_) {
+          setFullName(MOCK_FULL_NAME);
+          setEmail(user.email || MOCK_EMAIL);
+        }
+
+        // 3) Stats reales (DÍAS y ACTIVIDADES)
+        try {
+          const rows = await fetchProgressRows(token);
+
+          if (rows) {
+            const { completedCount, days: computedDays } = computeActivityStats(rows);
+
+            setActivities(
+              Number.isFinite(Number(completedCount)) ? Number(completedCount) : MOCK_ACTIVITIES
+            );
+
+            setDays(
+              computedDays !== null && computedDays !== undefined
+                ? computedDays
+                : MOCK_DAYS
+            );
+          } else {
+            setActivities(MOCK_ACTIVITIES);
+            setDays(MOCK_DAYS);
+          }
+        } catch (_) {
+          setActivities(MOCK_ACTIVITIES);
+          setDays(MOCK_DAYS);
+        }
       } finally {
         setLoadingPhoto(false);
       }
     });
+
     return () => unsub();
   }, []);
 
@@ -174,7 +348,7 @@ export default function ProfilePlatformSmall() {
               color: "#000",
             }}
           >
-            {MOCK_FULL_NAME}
+            {fullName}
           </Typography>
 
           {/* CORREO */}
@@ -186,7 +360,7 @@ export default function ProfilePlatformSmall() {
               wordBreak: "break-word",
             }}
           >
-            {MOCK_EMAIL}
+            {email}
           </Typography>
 
           {/* BOTÓN IDENTIFICACIÓN */}
@@ -210,14 +384,14 @@ export default function ProfilePlatformSmall() {
             Ver mi identificación digital
           </Button>
 
-          {/* HORAS / CURSOS */}
+          {/* DÍAS / ACTIVIDADES */}
           <Box
             sx={{
               display: "flex",
               mt: 1.8,
             }}
           >
-            {/* HORAS */}
+            {/* DÍAS */}
             <Box
               sx={{
                 flex: 1,
@@ -233,7 +407,7 @@ export default function ProfilePlatformSmall() {
                   fontSize: "1.35rem",
                 }}
               >
-                {MOCK_HOURS}
+                {days}
               </Typography>
               <Typography
                 sx={{
@@ -242,11 +416,11 @@ export default function ProfilePlatformSmall() {
                   fontSize: "0.74rem",
                 }}
               >
-                HORAS
+                DÍAS
               </Typography>
             </Box>
 
-            {/* CURSOS */}
+            {/* ACTIVIDADES */}
             <Box
               sx={{
                 flex: 1,
@@ -261,7 +435,7 @@ export default function ProfilePlatformSmall() {
                   fontSize: "1.35rem",
                 }}
               >
-                {MOCK_COURSES}
+                {activities}
               </Typography>
               <Typography
                 sx={{
@@ -270,14 +444,14 @@ export default function ProfilePlatformSmall() {
                   fontSize: "0.74rem",
                 }}
               >
-                CURSOS
+                ACTIVIDADES
               </Typography>
             </Box>
           </Box>
         </Box>
       </Box>
 
-      {/* 🏅 LOGRO MÁS RECIENTE (igual concepto que el grande) */}
+      {/* 🏅 LOGRO MÁS RECIENTE */}
       <Box
         sx={{
           backgroundColor: "#ffffff",
