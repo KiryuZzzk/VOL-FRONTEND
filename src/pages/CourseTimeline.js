@@ -851,6 +851,9 @@ const FinalQuizViewer = ({ activity, onComplete }) => {
 
   const [confirmOpen, setConfirmOpen] = useState(false);
 
+  const [startLoading, setStartLoading] = useState(false);
+  const [startError, setStartError] = useState(null);
+
   useEffect(() => {
     setStarted(false);
     setQuestions([]);
@@ -858,6 +861,8 @@ const FinalQuizViewer = ({ activity, onComplete }) => {
     setSubmitted(false);
     setResult(null);
     setConfirmOpen(false);
+    setStartLoading(false);
+    setStartError(null);
   }, [activity?.id]);
 
   const buildQuestions = () => {
@@ -873,13 +878,26 @@ const FinalQuizViewer = ({ activity, onComplete }) => {
     });
   };
 
-  const handleStart = () => {
+  const handleStart = async () => {
     if (attemptsRemaining === 0) return;
-    setConfirmOpen(false);
-    setStarted(true);
-    setQuestions(buildQuestions());
-    // DEV: Si quieres “congelar” el set de preguntas por intento y evitar cambios al recargar,
-    // puedes persistir questions en backend o localStorage con una key por usuario+actividad+attempt.
+
+    setStartLoading(true);
+    setStartError(null);
+
+    try {
+      // ✅ Consumir intento SOLO cuando el usuario confirma iniciar
+      await postWithAuth(`${BACKEND_URL}/progreso/actividades/${activity.id}/iniciar`, {});
+
+      setConfirmOpen(false);
+      setStarted(true);
+      setQuestions(buildQuestions());
+      // DEV: Si quieres “congelar” el set de preguntas por intento y evitar cambios al recargar,
+      // puedes persistir questions en backend o localStorage con una key por usuario+actividad+attempt.
+    } catch (e) {
+      setStartError(e?.message || "No se pudo iniciar el examen.");
+    } finally {
+      setStartLoading(false);
+    }
   };
 
   const handleChange = (qIndex, option) => {
@@ -1028,10 +1046,17 @@ const FinalQuizViewer = ({ activity, onComplete }) => {
               {attemptsLabel}
             </Typography>
 
+            {startError && (
+              <Alert severity="error" sx={{ mt: 1.5, borderRadius: 2 }}>
+                {startError}
+              </Alert>
+            )}
+
             <Stack direction="row" spacing={1.25} sx={{ mt: 2 }}>
               <Button
                 variant="contained"
                 onClick={handleStart}
+                disabled={startLoading || blocked || bankRaw.length === 0}
                 sx={{
                   backgroundColor: COLORS.red,
                   "&:hover": { backgroundColor: COLORS.redDark },
@@ -1040,7 +1065,7 @@ const FinalQuizViewer = ({ activity, onComplete }) => {
                   textTransform: "none",
                 }}
               >
-                Sí, iniciar
+                {startLoading ? "Iniciando..." : "Sí, iniciar"}
               </Button>
               <Button
                 variant="outlined"
@@ -2184,7 +2209,11 @@ const CourseTimeline = ({
     if (typeof onActivityClick === "function") onActivityClick(payload);
 
     try {
-      await markStarted({ activityId: activityIdNum });
+      // ✅ NO consumir intento al abrir final_quiz.
+      // El intento se consume cuando el usuario confirma "Sí, iniciar" en FinalQuizViewer.
+      if (type !== "final_quiz") {
+        await markStarted({ activityId: activityIdNum });
+      }
     } catch (err) {
       const msg = String(err?.message || err || "");
 

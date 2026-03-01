@@ -65,6 +65,8 @@ const COLUMNS = [
   { key: "curp", label: "CURP", minWidth: 180, defaultVisible: true, toggleable: true },
   { key: "correo", label: "Correo", minWidth: 220, defaultVisible: true, toggleable: true },
 
+  { key: "entrevistado", label: "Entrevista", minWidth: 150, defaultVisible: true, toggleable: true },
+
   { key: "telefono", label: "Teléfono", minWidth: 120, defaultVisible: false, toggleable: true },
   { key: "celular", label: "Celular", minWidth: 120, defaultVisible: false, toggleable: true },
 
@@ -154,8 +156,38 @@ function downloadTextFile(filename, text, mime = "text/csv;charset=utf-8") {
   URL.revokeObjectURL(url);
 }
 
+function EntrevistaChip({ value }) {
+  const v = (value || "").toString().trim().toLowerCase();
+  if (!v) {
+    return (
+      <Chip
+        label="—"
+        size="small"
+        variant="outlined"
+        sx={{ textTransform: "uppercase", fontSize: 11, opacity: 0.7 }}
+      />
+    );
+  }
+
+  const isSi = v === "si";
+  return (
+    <Chip
+      label={isSi ? "Entrevistado" : "No entrevistado"}
+      size="small"
+      color={isSi ? "success" : undefined}
+      variant={isSi ? "filled" : "outlined"}
+      sx={{ textTransform: "uppercase", fontSize: 11 }}
+    />
+  );
+}
+
 const ConsultarUsuarios = () => {
   const [rows, setRows] = useState([]);
+
+const [interviewAnchor, setInterviewAnchor] = useState(null);
+const [interviewRow, setInterviewRow] = useState(null);
+const interviewOpen = Boolean(interviewAnchor);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -169,6 +201,10 @@ const ConsultarUsuarios = () => {
   // client-side dropdowns
   const [estadoFilter, setEstadoFilter] = useState("");
   const [coordinacionFilter, setCoordinacionFilter] = useState("");
+  const [coloniaFilter, setColoniaFilter] = useState("");
+  const [validacionFilter, setValidacionFilter] = useState("");
+  const [entrevistaFilter, setEntrevistaFilter] = useState(""); // "", "si", "no", "none"
+  const [cpFilter, setCpFilter] = useState("");
 
   // tabla
   const [page, setPage] = useState(0);
@@ -207,6 +243,16 @@ const ConsultarUsuarios = () => {
     return Array.from(s).sort((a, b) => a.localeCompare(b));
   }, [rows]);
 
+
+  const uniqueColonias = useMemo(() => {
+    const s = new Set(rows.map((r) => (r.colonia || "").trim()).filter(Boolean));
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+  
+  const uniqueValidaciones = useMemo(() => {
+    const s = new Set(rows.map((r) => (r.estado_validacion || "").trim()).filter(Boolean));
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
   const fetchUsers = async ({ field, term } = {}) => {
     setLoading(true);
     setError("");
@@ -249,6 +295,54 @@ const ConsultarUsuarios = () => {
     }
   };
 
+
+const setEntrevistadoUser = async (userId, entrevistado) => {
+  // optimistic update
+  const prev = rows;
+  setRows((current) =>
+    current.map((u) => (u.id === userId ? { ...u, entrevistado } : u))
+  );
+
+  try {
+    const auth = getAuth();
+    const currentUser = auth.currentUser;
+    if (!currentUser) throw new Error("Usuario no autenticado");
+
+    const idToken = await currentUser.getIdToken();
+    const uid = currentUser.uid;
+
+    const v = (entrevistado ?? "").toString().trim().toLowerCase();
+    if (!["si", "no"].includes(v)) throw new Error('Valor inválido (usa "si" o "no")');
+
+    const res = await fetch(`${API_BASE}/users/${userId}/entrevistado`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${idToken}`,
+        "x-firebase-uid": uid,
+      },
+      body: JSON.stringify({ entrevistado: v }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data?.error || "No se pudo actualizar entrevista");
+    }
+  } catch (e) {
+    // rollback
+    setRows(prev);
+    setError(e.message || "Error al actualizar entrevista");
+  } finally {
+    setInterviewAnchor(null);
+    setInterviewRow(null);
+  }
+};
+
+const openInterviewMenu = (e, row) => {
+  setInterviewAnchor(e.currentTarget);
+  setInterviewRow(row);
+};
+
   useEffect(() => {
     fetchUsers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -278,6 +372,23 @@ const ConsultarUsuarios = () => {
     if (coordinacionFilter) {
       const term = normalizeText(coordinacionFilter);
       r = r.filter((x) => normalizeText(x.coordinacion).includes(term));
+    }
+    if (coloniaFilter) {
+      const term = normalizeText(coloniaFilter);
+      r = r.filter((x) => normalizeText(x.colonia).includes(term));
+    }
+    if (validacionFilter) {
+      const term = normalizeText(validacionFilter);
+      r = r.filter((x) => normalizeText(x.estado_validacion).includes(term));
+    }
+    if (entrevistaFilter) {
+      const v = (x) => ((x?.entrevistado ?? "").toString().trim().toLowerCase());
+      if (entrevistaFilter === "none") r = r.filter((x) => !v(x));
+      else r = r.filter((x) => v(x) === entrevistaFilter);
+    }
+    if (cpFilter.trim()) {
+      const term = normalizeText(cpFilter.trim());
+      r = r.filter((x) => normalizeText(x.codigo_postal).includes(term));
     }
 
     if (nameSearch.trim()) {
@@ -345,6 +456,10 @@ const ConsultarUsuarios = () => {
   const clearFilters = () => {
     setEstadoFilter("");
     setCoordinacionFilter("");
+    setColoniaFilter("");
+    setValidacionFilter("");
+    setEntrevistaFilter("");
+    setCpFilter("");
     setNameSearch("");
   };
 
@@ -501,6 +616,61 @@ const ConsultarUsuarios = () => {
                 </MenuItem>
               ))}
             </TextField>
+
+<TextField
+  select
+  size="small"
+  label="Colonia"
+  value={coloniaFilter}
+  onChange={(e) => setColoniaFilter(e.target.value)}
+  sx={{ width: { xs: "100%", md: 320 }, backgroundColor: COLORS.white }}
+>
+  <MenuItem value="">Todas</MenuItem>
+  {uniqueColonias.map((x) => (
+    <MenuItem key={x} value={x}>
+      {x}
+    </MenuItem>
+  ))}
+</TextField>
+
+<TextField
+  select
+  size="small"
+  label="Validación"
+  value={validacionFilter}
+  onChange={(e) => setValidacionFilter(e.target.value)}
+  sx={{ width: { xs: "100%", md: 220 }, backgroundColor: COLORS.white }}
+>
+  <MenuItem value="">Todas</MenuItem>
+  {uniqueValidaciones.map((x) => (
+    <MenuItem key={x} value={x}>
+      {x}
+    </MenuItem>
+  ))}
+</TextField>
+
+<TextField
+  select
+  size="small"
+  label="Entrevista"
+  value={entrevistaFilter}
+  onChange={(e) => setEntrevistaFilter(e.target.value)}
+  sx={{ width: { xs: "100%", md: 220 }, backgroundColor: COLORS.white }}
+>
+  <MenuItem value="">Todas</MenuItem>
+  <MenuItem value="si">Entrevistado</MenuItem>
+  <MenuItem value="no">No entrevistado</MenuItem>
+  <MenuItem value="none">Sin dato</MenuItem>
+</TextField>
+
+<TextField
+  size="small"
+  label="CP"
+  placeholder="Ej. 06000"
+  value={cpFilter}
+  onChange={(e) => setCpFilter(e.target.value)}
+  sx={{ width: { xs: "100%", md: 180 }, backgroundColor: COLORS.white }}
+/>
 
             <Button
               variant="outlined"
@@ -715,10 +885,31 @@ const ConsultarUsuarios = () => {
                     {COLUMNS.filter((c) => visibleCols[c.key]).map((c) => {
                       const v = getDisplayValue(r, c.key);
                       return (
-                        <TableCell key={c.key} sx={{ whiteSpace: "nowrap" }}>
-                          {v ? v : <span style={{ color: COLORS.textMuted }}>—</span>}
-                        </TableCell>
-                      );
+  <TableCell key={c.key} sx={{ whiteSpace: "nowrap" }}>
+    {c.key === "entrevistado" ? (
+      <Stack direction="row" spacing={1} alignItems="center">
+        <EntrevistaChip value={r?.entrevistado} />
+        <Tooltip title="Marcar entrevista">
+          <IconButton
+            size="small"
+            onClick={(e) => openInterviewMenu(e, r)}
+            sx={{
+              border: `1px solid ${COLORS.subtle}`,
+              borderRadius: 2,
+              backgroundColor: COLORS.white,
+            }}
+          >
+            <FiSliders />
+          </IconButton>
+        </Tooltip>
+      </Stack>
+    ) : v ? (
+      v
+    ) : (
+      <span style={{ color: COLORS.textMuted }}>—</span>
+    )}
+  </TableCell>
+);
                     })}
                   </TableRow>
                 ))
@@ -740,6 +931,58 @@ const ConsultarUsuarios = () => {
           rowsPerPageOptions={[10, 20, 50, 100]}
         />
       </Paper>
+
+
+{/* Menú entrevista */}
+<Menu
+  id="menu-entrevista"
+  anchorEl={interviewAnchor}
+  open={interviewOpen}
+  onClose={() => {
+    setInterviewAnchor(null);
+    setInterviewRow(null);
+  }}
+  PaperProps={{
+    sx: {
+      mt: 1,
+      borderRadius: 3,
+      border: `1px solid ${COLORS.subtle}`,
+      backgroundColor: COLORS.white,
+      minWidth: 260,
+      p: 0.5,
+    },
+  }}
+>
+  <Box sx={{ px: 1.2, pt: 1, pb: 0.5 }}>
+    <Typography sx={{ fontWeight: 900, color: COLORS.textMain }}>
+      Entrevista
+    </Typography>
+    <Typography variant="caption" sx={{ color: COLORS.textMuted }}>
+      {interviewRow ? fullNameOf(interviewRow) : ""}
+    </Typography>
+  </Box>
+  <Divider sx={{ borderColor: COLORS.subtle }} />
+
+  <MenuItem
+    onClick={() => setEntrevistadoUser(interviewRow?.id, "si")}
+    sx={{ borderRadius: 2, mx: 0.5, my: 0.25 }}
+  >
+    <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ width: "100%" }}>
+      <Typography sx={{ fontWeight: 800, color: COLORS.textMain }}>Marcar como entrevistado</Typography>
+      <Chip label="SI" size="small" color="success" sx={{ fontWeight: 900 }} />
+    </Stack>
+  </MenuItem>
+
+  <MenuItem
+    onClick={() => setEntrevistadoUser(interviewRow?.id, "no")}
+    sx={{ borderRadius: 2, mx: 0.5, my: 0.25 }}
+  >
+    <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ width: "100%" }}>
+      <Typography sx={{ fontWeight: 800, color: COLORS.textMain }}>Marcar como NO entrevistado</Typography>
+      <Chip label="NO" size="small" variant="outlined" sx={{ fontWeight: 900 }} />
+    </Stack>
+  </MenuItem>
+</Menu>
     </Box>
   );
 };

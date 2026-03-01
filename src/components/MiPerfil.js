@@ -300,7 +300,8 @@ function normalizeProfile(rawIn = {}) {
       "fecha_registro",
       "fechaRegistro",
       "created_at",
-    ]),
+    ]),    entrevistado: firstNonEmpty(raw, ["entrevistado"]),
+
   };
 }
 
@@ -773,8 +774,35 @@ export default function MiPerfil({ user: userProp }) {
                   <Row label="Estado" value={P.estado} />
                   <Row label="Colonia / Municipio" value={P.colonia} />
                   <Row label="Código postal" value={P.cp} />
-                  <Row label="Rol" value={P.rol} />
-                  <Row label="Coordinación" value={P.coordinacion} />
+<Row
+  label="Entrevista"
+  value={
+    P.entrevistado ? (
+      <Chip
+        label={
+          (P.entrevistado || "").toString().toLowerCase() === "si"
+            ? "Entrevistado"
+            : "No entrevistado"
+        }
+        size="small"
+        color={
+          (P.entrevistado || "").toString().toLowerCase() === "si"
+            ? "success"
+            : undefined
+        }
+        variant={
+          (P.entrevistado || "").toString().toLowerCase() === "si"
+            ? "filled"
+            : "outlined"
+        }
+        sx={{ textTransform: "uppercase", fontSize: 11 }}
+      />
+    ) : (
+      "—"
+    )
+  }
+/>
+
                   <Row
                     label="Estado del expediente"
                     value={

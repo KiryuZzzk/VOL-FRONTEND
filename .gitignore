@@ -10,6 +10,9 @@
 
 # production
 /build
+/build.zip
+/public/manuals/
+/public/manuals/capacitacion/PNA/M4/Presentacion.pdf
 
 # misc
 .DS_Store

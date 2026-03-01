@@ -15,6 +15,8 @@ import UsuariosPage from "./pages/Usuarios";
 import Trayectoria from "./pages/Trayectoria";
 import Documentos from "./pages/Documentos";
 import Progresos from "./pages/Progresos";
+import Trayectorias from "./pages/Trayectorias";
+import Informes from "./pages/Informes";
 
 import {
   BrowserRouter as Router,
@@ -27,7 +29,7 @@ import {
 
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth } from "./firebase";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState } from "react";
 
 import Conocenos from "./pages/Conocenos";
 import RegistroDoble from "./components/RegistroDoble";
@@ -49,7 +51,23 @@ const normalizePrograms = (data) => {
   return [];
 };
 
-const ALL_PROGRAMS = normalizePrograms(rawProgramsData);
+const ALL_PROGRAMS = normalizePrograms(rawProgramsData); // (lo dejo por si lo usas después)
+
+// =======================
+// 🔒 Guardián de rutas por rol
+// =======================
+function ProtectedRoute({ userInfo, allowedRoles, redirectTo = "/Inicio", children }) {
+  const rolNombre = (userInfo?.rol?.nombre_rol || "").toLowerCase();
+
+  // Si por alguna razón no hay rol, mejor no dejar pasar
+  if (!rolNombre) return <Navigate to={redirectTo} replace />;
+
+  if (!allowedRoles.includes(rolNombre)) {
+    return <Navigate to={redirectTo} replace />;
+  }
+
+  return children;
+}
 
 function AppInner() {
   const [firebaseUser, setFirebaseUser] = useState(null);
@@ -109,7 +127,7 @@ function AppInner() {
             setUserInfo(data);
             setNeedsDoubleRegister(false);
 
-            const rolNombre = data?.rol?.nombre_rol || "";
+            const rolNombre = (data?.rol?.nombre_rol || "").toLowerCase();
             setModOrAdmin(["admin", "moderador"].includes(rolNombre));
           } else if (res.status === 401 || res.status === 403) {
             const errJson = await res.json().catch(() => null);
@@ -183,6 +201,9 @@ function AppInner() {
     );
   }
 
+  // Roles permitidos para páginas "de staff"
+  const STAFF_ROLES = ["admin", "moderador"];
+
   return (
     <div className="App">
       {!hideNavbar && (userInfo ? <NavbarLogIn /> : <Navbar />)}
@@ -191,6 +212,9 @@ function AppInner() {
       <Routes>
         {userInfo ? (
           <>
+            {/* ✅ Para que la redirección a /Inicio funcione aún estando logueado */}
+            <Route path="/Inicio" element={<Navigate to="/Plataforma" replace />} />
+
             <Route
               path="/Plataforma"
               element={
@@ -218,7 +242,7 @@ function AppInner() {
               }
             />
 
-
+            {/* ✅ Esta SÍ es para participantes: su propia trayectoria */}
             <Route
               path="/Trayectoria"
               element={
@@ -228,30 +252,64 @@ function AppInner() {
               }
             />
 
+            {/* 🔒 SOLO admin/mod */}
             <Route
               path="/Usuarios"
               element={
-                <PlatformLayout modOrAdmin={modOrAdmin}>
-                  <UsuariosPage />
-                </PlatformLayout>
+                <ProtectedRoute userInfo={userInfo} allowedRoles={STAFF_ROLES} redirectTo="/Inicio">
+                  <PlatformLayout modOrAdmin={modOrAdmin}>
+                    <UsuariosPage />
+                  </PlatformLayout>
+                </ProtectedRoute>
               }
             />
 
+            {/* 🔒 SOLO admin/mod */}
             <Route
               path="/Documentos"
               element={
-                <PlatformLayout modOrAdmin={modOrAdmin}>
-                  <Documentos />
-                </PlatformLayout>
+                <ProtectedRoute userInfo={userInfo} allowedRoles={STAFF_ROLES} redirectTo="/Inicio">
+                  <PlatformLayout modOrAdmin={modOrAdmin}>
+                    <Documentos />
+                  </PlatformLayout>
+                </ProtectedRoute>
               }
             />
 
+            {/* 🔒 SOLO admin/mod */}
             <Route
               path="/Progresos"
               element={
-                <PlatformLayout modOrAdmin={modOrAdmin}>
-                  <Progresos />
-                </PlatformLayout>
+                <ProtectedRoute userInfo={userInfo} allowedRoles={STAFF_ROLES} redirectTo="/Inicio">
+                  <PlatformLayout modOrAdmin={modOrAdmin}>
+                    <Progresos />
+                  </PlatformLayout>
+                </ProtectedRoute>
+              }
+            />
+
+            {/* 🔒 SOLO admin/mod */}
+            <Route
+              path="/Trayectorias"
+              element={
+                <ProtectedRoute userInfo={userInfo} allowedRoles={STAFF_ROLES} redirectTo="/Inicio">
+                  <PlatformLayout modOrAdmin={modOrAdmin}>
+                    <Trayectorias />
+                  </PlatformLayout>
+                </ProtectedRoute>
+              }
+            />
+
+
+            {/* 🔒 SOLO admin/mod */}
+            <Route
+              path="/Informes"
+              element={
+                <ProtectedRoute userInfo={userInfo} allowedRoles={STAFF_ROLES} redirectTo="/Inicio">
+                  <PlatformLayout modOrAdmin={modOrAdmin}>
+                    <Informes />
+                  </PlatformLayout>
+                </ProtectedRoute>
               }
             />
 
@@ -307,7 +365,6 @@ function ProgramaPage() {
     />
   );
 }
-
 
 export default function App() {
   return (

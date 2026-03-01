@@ -23,6 +23,7 @@ import Program5 from "../assets/Prog5.png";
 import Program6 from "../assets/Prog6.png";
 import Program7 from "../assets/Prog7.png";
 import Program8 from "../assets/Prog8.png";
+import Program9 from "../assets/Prog9.png";
 
 const programas = [
   {
@@ -41,7 +42,7 @@ const programas = [
     key: "socorros",
     image: Program2,
     title: "Socorros",
-    videoId: "UiYOTHesYt0",
+    videoId: "TeOujnVjKh4",
     descripcion:
       "Es la cara operativa de la respuesta a emergencias. Apoyas en la atención prehospitalaria, traslados, guardias y respuesta ante desastres.",
     perfil:
@@ -53,7 +54,7 @@ const programas = [
     key: "apoyo-psicosocial",
     image: Program3,
     title: "Apoyo Psicosocial",
-    videoId: "TeOujnVjKh4",
+    videoId: "D86Dcc2PClg",
     descripcion:
       "Acompañas emocionalmente a personas y comunidades que han vivido emergencias, pérdidas o situaciones difíciles.",
     perfil:
@@ -65,7 +66,7 @@ const programas = [
     key: "comunicacion",
     image: Program4,
     title: "Comunicación",
-    videoId: "DBjV-ima4F8",
+    videoId: "m47TgdABs-o",
     descripcion:
       "Das voz a las historias y campañas de Cruz Roja. Ayudas a conectar a más personas con el movimiento.",
     perfil:
@@ -77,7 +78,7 @@ const programas = [
     key: "migracion",
     image: Program5,
     title: "Migración",
-    videoId: "UTKAwLSsiIE",
+    videoId: "q1lhkhA-wnc",
     descripcion:
       "Acompañas a personas en situación de movilidad humana, brindando orientación y apoyo humanitario.",
     perfil:
@@ -89,7 +90,7 @@ const programas = [
     key: "prevencion",
     image: Program6,
     title: "Prevención",
-    videoId: "q1lhkhA-wnc",
+    videoId: "UTKAwLSsiIE",
     descripcion:
       "Promueves la cultura de prevención de accidentes en hogares, escuelas y comunidades.",
     perfil:
@@ -101,7 +102,7 @@ const programas = [
     key: "reduccion-riesgos",
     image: Program7,
     title: "Reducción de Riesgos",
-    videoId: "m47TgdABs-o",
+    videoId: "DBjV-ima4F8",
     descripcion:
       "Trabajas con comunidades para fortalecer su resiliencia ante desastres.",
     perfil:
@@ -113,13 +114,25 @@ const programas = [
     key: "voluntariado",
     image: Program8,
     title: "Voluntariado",
-    videoId: "D86Dcc2PClg",
+    videoId: "UiYOTHesYt0",
     descripcion:
       "Apoyas en actividades, eventos, centros de acopio y campañas humanitarias.",
     perfil:
       "Mayor de edad, disponibilidad flexible, actitud de servicio y trabajo en equipo.",
     formacion:
       "1 mes: inducción institucional, armado de kits, apoyo logístico y operaciones básicas.",
+  },
+    {
+    key: "damas",
+    image: Program9,
+    title: "Voluntariado de Damas",
+    videoId: "SOx-t7AcEQI",
+    descripcion:
+      "Apoya en relaciones estratégicas, captación de recursos y en campañas de intervención social con enfoque en calidez.",
+    perfil:
+      "Mayor de edad, interés en apoyo a las comunidades.",
+    formacion:
+      "Formación dependiendo de tu preferencia.",
   },
 ];
 

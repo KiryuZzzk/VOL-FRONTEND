@@ -20,6 +20,8 @@ import {
   TablePagination,
   IconButton,
   Tooltip,
+  Checkbox,
+  FormControlLabel,
 } from "@mui/material";
 import { getAuth } from "firebase/auth";
 import { FiRefreshCw, FiSearch, FiExternalLink, FiCheckCircle } from "react-icons/fi";
@@ -73,6 +75,27 @@ function safeStr(v) {
   if (v === null || v === undefined) return "";
   return String(v);
 }
+
+// ✅ Traducción para estatus generales (cuando viene del backend en inglés)
+const GENERIC_STATUS_LABEL = {
+  enrolled: "Inscrito",
+  active: "Activo",
+  inactive: "Inactivo",
+  completed: "Completado",
+  dropped: "Baja",
+  pending: "Pendiente",
+};
+
+const YES_NO = (v) => (v ? "Sí" : "No");
+
+const toEsActivityType = (typeKey) => ACTIVITY_TYPE_LABEL[safeStr(typeKey)] || safeStr(typeKey);
+const toEsActivityStatus = (statusKey) => ACTIVITY_STATUS_LABEL[safeStr(statusKey)] || safeStr(statusKey);
+const toEsReviewStatus = (s) => {
+  const raw = safeStr(s);
+  const map = { submitted: "Enviado", approved: "Aprobado", rejected: "Rechazado" };
+  return map[raw] || raw;
+};
+const toEsGenericStatus = (s) => GENERIC_STATUS_LABEL[safeStr(s)] || safeStr(s);
 
 function normalizeText(s) {
   return safeStr(s)
@@ -163,6 +186,18 @@ export default function Progresos() {
   const [usersLoading, setUsersLoading] = useState(false);
   const [usersError, setUsersError] = useState("");
 
+  // ✅ Filtro por programa (para listar alumnos inscritos)
+  const [programFilterList, setProgramFilterList] = useState([]); // [{program_id, code, name}]
+  const [programFilterCode, setProgramFilterCode] = useState(""); // "" = sin filtro
+  const [programUsersMeta, setProgramUsersMeta] = useState(null); // {program, totalActivities, count}
+  const [programUsersLoading, setProgramUsersLoading] = useState(false);
+  const [programUsersError, setProgramUsersError] = useState("");
+
+  // ✅ Filtros extra (solo FRONTEND) para la lista por programa
+  const [filterMinAvgScore, setFilterMinAvgScore] = useState(""); // número o ""
+  const [filterOnlyNoProgress, setFilterOnlyNoProgress] = useState(false); // no han hecho nada
+  const [filterOnlyNoScore, setFilterOnlyNoScore] = useState(false); // sin calificación
+
   const [selectedUser, setSelectedUser] = useState(null);
 
   // Programas del usuario
@@ -198,6 +233,12 @@ export default function Progresos() {
   }, [selectedUser]);
 
   const fetchUsers = async () => {
+    // Si está activo el filtro por programa, la lista viene del endpoint de programa.
+    if (programFilterCode) {
+      await fetchUsersByProgramCode(programFilterCode);
+      return;
+    }
+
     setUsersLoading(true);
     setUsersError("");
     try {
@@ -218,34 +259,160 @@ export default function Progresos() {
     }
   };
 
+  const fetchProgramFilterList = async () => {
+    try {
+      const data = await authedFetch(`${API_BASE}/progreso/admin/programas`, { method: "GET" });
+      setProgramFilterList(Array.isArray(data?.programs) ? data.programs : []);
+    } catch (e) {
+      // No es crítico: si falla, igual se puede buscar por usuario como siempre.
+      setProgramFilterList([]);
+    }
+  };
+
+  const fetchUsersByProgramCode = async (programCode) => {
+    const code = safeStr(programCode).trim().toUpperCase();
+    if (!code) return;
+
+    setProgramUsersLoading(true);
+    setProgramUsersError("");
+    setUsersError("");
+    setUsersLoading(false); // por si veníamos de debounce
+    try {
+      const data = await authedFetch(
+        `${API_BASE}/progreso/admin/programas/${encodeURIComponent(code)}/users`,
+        { method: "GET" }
+      );
+
+      const list = Array.isArray(data?.users) ? data.users : [];
+      // Normalizamos forma para reutilizar la tabla actual + selectUser()
+      const normalized = list.map((r) => ({
+        id: r.user_id_internal, // 👈 importante para selectUserKey (users.id)
+        uid: r.uid,
+        matricula: r.matricula,
+        correo: r.correo,
+        nombre: r.nombre,
+        apellido_pat: r.apellido_pat,
+        apellido_mat: r.apellido_mat,
+        // extras (solo visual)
+        enrollment_status: r.enrollment_status,
+        progress_pct: r.progress_pct,
+        avg_score: r.avg_score,
+        last_activity_at: r.last_activity_at,
+        // estado del usuario (users.status)
+        estado: r.estado ?? null, // entidad federativa
+
+        // si quieres conservar status, que sea SOLO status
+        status: r.user_status ?? r.status ?? r.userStatus ?? null,
+      }));
+
+      setUsers(normalized);
+      setUsersPage(0);
+
+      setProgramUsersMeta({
+        program: data?.program || { code, name: code },
+        totalActivities: data?.totalActivities ?? null,
+        count: normalized.length,
+      });
+    } catch (e) {
+      setProgramUsersError(e.message || "Error al cargar usuarios por programa");
+      setUsers([]);
+      setProgramUsersMeta(null);
+    } finally {
+      setProgramUsersLoading(false);
+    }
+  };
+
+  // Cargar lista de programas para filtro (una vez)
+  useEffect(() => {
+    fetchProgramFilterList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Debounce de búsqueda
   useEffect(() => {
+    // Si estás filtrando por programa, NO dispares búsqueda al backend /users.
+    if (programFilterCode) return;
+
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       fetchUsers();
     }, 350);
+
     return () => debounceRef.current && clearTimeout(debounceRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userSearchField, userSearch]);
+  }, [userSearchField, userSearch, programFilterCode]);
+
+  // Cuando cambie el filtro por programa, trae el roster de ese programa
+  useEffect(() => {
+    if (!programFilterCode) {
+      setProgramUsersMeta(null);
+      setProgramUsersError("");
+      // si quitamos filtro, vuelve a traer usuarios (respetando input)
+      fetchUsers();
+      return;
+    }
+
+    // al elegir programa, limpiamos selección previa
+    setSelectedUser(null);
+    setSelectedProgram(null);
+    setPrograms([]);
+    setProgramView(null);
+    setReviewEdits({});
+    setReviewSavedMsg({});
+    setProgramsError("");
+    setViewError("");
+
+    fetchUsersByProgramCode(programFilterCode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [programFilterCode]);
 
   const usersFiltered = useMemo(() => {
+    // 1) filtro por búsqueda (nombre/correo/curp/matrícula)
     const term = userSearch.trim();
-    if (!term) return users;
+    let list = Array.isArray(users) ? users : [];
 
-    const nTerm = normalizeText(term);
-    return users.filter((u) => {
-      const name = normalizeText(fullNameOf(u));
-      const correo = normalizeText(u?.correo);
-      const curp = normalizeText(u?.curp);
-      const mat = normalizeText(u?.matricula);
-      return (
-        name.includes(nTerm) ||
-        correo.includes(nTerm) ||
-        curp.includes(nTerm) ||
-        mat.includes(nTerm)
-      );
-    });
-  }, [users, userSearch]);
+    if (term) {
+      const nTerm = normalizeText(term);
+      list = list.filter((u) => {
+        const name = normalizeText(fullNameOf(u));
+        const correo = normalizeText(u?.correo);
+        const curp = normalizeText(u?.curp);
+        const mat = normalizeText(u?.matricula);
+        return name.includes(nTerm) || correo.includes(nTerm) || curp.includes(nTerm) || mat.includes(nTerm);
+      });
+    }
+
+    // 2) filtros extra SOLO cuando estás viendo usuarios por programa
+    if (programFilterCode) {
+      // a) sin progreso: progress_pct == 0 o null/undefined
+      if (filterOnlyNoProgress) {
+        list = list.filter((u) => {
+          const p = u?.progress_pct;
+          return p === 0 || p === "0" || p === null || p === undefined;
+        });
+      }
+
+      // b) sin calificación: avg_score == null/undefined/""
+      if (filterOnlyNoScore) {
+        list = list.filter((u) => u?.avg_score === null || u?.avg_score === undefined || u?.avg_score === "");
+      }
+
+      // c) promedio mínimo
+      if (filterMinAvgScore !== "" && filterMinAvgScore !== null && filterMinAvgScore !== undefined) {
+        const min = Number(filterMinAvgScore);
+        if (!Number.isNaN(min)) {
+          list = list.filter((u) => {
+            const s = u?.avg_score;
+            if (s === null || s === undefined || s === "") return false;
+            const n = Number(s);
+            return !Number.isNaN(n) && n >= min;
+          });
+        }
+      }
+    }
+
+    return list;
+  }, [users, userSearch, programFilterCode, filterOnlyNoProgress, filterOnlyNoScore, filterMinAvgScore]);
 
   const usersPageRows = useMemo(() => {
     const start = usersPage * usersRowsPerPage;
@@ -401,6 +568,174 @@ export default function Progresos() {
     }
   };
 
+  // ---------------------------
+  // CSV export helpers
+  // ---------------------------
+  const csvEscape = (value) => {
+    const s = safeStr(value);
+    // Si tiene comas, saltos o comillas -> envolver en comillas y escapar comillas dobles
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+
+  const downloadCsv = (filename, csvText) => {
+    try {
+      const blob = new Blob([`\ufeff${csvText}`], { type: "text/csv;charset=utf-8;" }); // BOM para Excel
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      // fallback: abre en nueva pestaña
+      const encoded = encodeURIComponent(csvText);
+      window.open(`data:text/csv;charset=utf-8,${encoded}`, "_blank");
+    }
+  };
+
+  const exportParticipantsCSV = () => {
+    // Exporta la lista tal como la estás viendo (respeta filtros y búsqueda)
+    const code = safeStr(programFilterCode).trim().toUpperCase() || "TODOS";
+    const progName = safeStr(programUsersMeta?.program?.name || programUsersMeta?.program?.code || code);
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, "0");
+    const d = String(today.getDate()).padStart(2, "0");
+
+    // ✅ REQ: NO exportar uid, estatus_usuario, promedio
+    const headers = [
+      "codigo_programa",
+      "nombre_programa",
+      "matricula",
+      "nombre_completo",
+      "correo",
+      "curp",
+      "estado",
+      "estatus_inscripcion",
+      "avance_pct",
+      "ultima_actividad",
+    ];
+
+    const rows = (Array.isArray(usersFiltered) ? usersFiltered : []).map((u) => [
+      code,
+      progName,
+      safeStr(u?.matricula),
+      fullNameOf(u),
+      safeStr(u?.correo),
+      safeStr(u?.curp),
+      safeStr(u?.estado),
+      toEsGenericStatus(u?.enrollment_status),
+      u?.progress_pct ?? "",
+      safeStr(u?.last_activity_at),
+    ]);
+
+    const csv = [headers.join(","), ...rows.map((r) => r.map(csvEscape).join(","))].join("\n");
+    downloadCsv(`participantes_${code}_${y}-${m}-${d}.csv`, csv);
+  };
+
+  const exportSelectedProgramProgressCSV = () => {
+    if (!selectedUser || !selectedProgram || !programView) return;
+
+    const code = safeStr(
+      selectedProgram?.code || selectedProgram?.program_code || selectedProgram?.programCode
+    )
+      .trim()
+      .toUpperCase();
+    const progName = safeStr(selectedProgram?.name || programView?.program?.name || code);
+    const userName = fullNameOf(selectedUser) || safeStr(selectedUser?.correo) || "Usuario";
+
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, "0");
+    const d = String(today.getDate()).padStart(2, "0");
+
+    // ✅ REQ: NO exportar uid de ningún tipo
+    const headers = [
+      "codigo_programa",
+      "nombre_programa",
+      "matricula_usuario",
+      "usuario",
+      "codigo_bloque",
+      "codigo_modulo",
+      "codigo_actividad",
+      "actividad",
+      "tipo_actividad",
+      "requerida",
+      "estatus_actividad",
+      "intentos",
+      "calificacion",
+      "estatus_evidencia",
+      "archivo_evidencia",
+      "url_evidencia",
+      "estatus_solicitud",
+      "clave_solicitud",
+      "titulo_solicitud",
+      "comentario_usuario",
+      "estatus_revision_editado",
+      "calificacion_editada",
+      "comentario_revision_editado",
+    ];
+
+    const list = Array.isArray(programView?.activities) ? programView.activities : [];
+
+    const rows = list.map((a) => {
+      const typeKey = safeStr(a.activity_type);
+      const isUpload = typeKey === "upload";
+      const isRequest = typeKey === "solicitud";
+
+      const doc = a.doc || null;
+      const req = a.request || null;
+
+      const kind =
+        isUpload && doc?.doc_id ? "doc" : isRequest && req?.request_id ? "request" : null;
+      const itemId =
+        kind === "doc" ? doc?.doc_id : kind === "request" ? req?.request_id : null;
+      const reviewKey = kind && itemId ? buildReviewKey(kind, itemId) : null;
+      const edit = reviewKey ? reviewEdits?.[reviewKey] || {} : {};
+
+      return [
+        code,
+        progName,
+        safeStr(selectedUser?.matricula),
+        userName,
+        safeStr(a.block_code),
+        safeStr(a.module_code),
+        safeStr(a.activity_code),
+        safeStr(a.activity_title),
+        toEsActivityType(typeKey),
+        YES_NO(!!a.required),
+        toEsActivityStatus(a.status),
+        a.attempts ?? "",
+        a.score ?? "",
+        // doc
+        isUpload ? toEsReviewStatus(doc?.doc_status) : "",
+        isUpload ? safeStr(doc?.file_name) : "",
+        isUpload ? safeStr(doc?.file_url) : "",
+        // request
+        isRequest ? toEsReviewStatus(req?.status) : "",
+        isRequest ? safeStr(req?.request_key) : "",
+        isRequest ? safeStr(req?.request_title) : "",
+        isRequest ? safeStr(req?.user_comment) : "",
+        // overrides (lo que el admin ha editado en UI, si aplica)
+        reviewKey ? toEsReviewStatus(edit?.status) : "",
+        reviewKey ? edit?.score ?? "" : "",
+        reviewKey ? safeStr(edit?.review_note) : "",
+      ];
+    });
+
+    const csv = [headers.join(","), ...rows.map((r) => r.map(csvEscape).join(","))].join("\n");
+
+    // ✅ REQ: el nombre del archivo NO debe usar uid
+    const fileUserKey =
+      safeStr(selectedUser?.matricula) || safeStr(selectedUser?.correo) || "usuario";
+
+    const safeCode = code || "PROGRAMA";
+    downloadCsv(`progreso_${safeCode}_${fileUserKey}_${y}-${m}-${d}.csv`, csv);
+  };
+
   return (
     <Box sx={{ minHeight: "100vh", backgroundColor: COLORS.bg, px: { xs: 1.5, md: 2 }, py: 2 }}>
       <Box sx={{ maxWidth: 1500, mx: "auto" }}>
@@ -437,6 +772,24 @@ export default function Progresos() {
                 color: COLORS.textMain,
               }}
             />
+
+            {programFilterCode ? (
+              <Button
+                variant="outlined"
+                onClick={exportParticipantsCSV}
+                sx={{
+                  borderRadius: 2,
+                  fontWeight: 900,
+                  backgroundColor: COLORS.white,
+                  border: `1px solid ${COLORS.subtle}`,
+                  color: COLORS.textMain,
+                  px: 2,
+                  ml: { xs: 0, md: 1 },
+                }}
+              >
+                Exportar CSV (programa)
+              </Button>
+            ) : null}
           </Stack>
         </Paper>
 
@@ -451,11 +804,53 @@ export default function Progresos() {
             mb: 2,
           }}
         >
-          <Stack direction={{ xs: "column", md: "row" }} spacing={1.2} alignItems="stretch">
+          <Stack direction="row" flexWrap="wrap" useFlexGap gap={1.2} alignItems="center">
+            <TextField
+              select
+              size="small"
+              label="Filtrar por programa"
+              value={programFilterCode}
+              onChange={(e) => {
+                const v = e.target.value;
+                setProgramFilterCode(v);
+                // reset filtros extra cuando cambias programa
+                setFilterMinAvgScore("");
+                setFilterOnlyNoProgress(false);
+                setFilterOnlyNoScore(false);
+              }}
+              sx={{ width: { xs: "100%", md: 320 }, backgroundColor: COLORS.white }}
+            >
+              <MenuItem value="">Todos los programas</MenuItem>
+              {programFilterList.map((p) => (
+                <MenuItem key={p.code} value={p.code}>
+                  {p.name} ({p.code})
+                </MenuItem>
+              ))}
+            </TextField>
+
+            {/* Export CSV (participantes) - solo cuando estás viendo una lista por programa */}
+            {programFilterCode ? (
+              <Button
+                variant="outlined"
+                onClick={exportParticipantsCSV}
+                sx={{
+                  borderRadius: 2,
+                  fontWeight: 900,
+                  backgroundColor: COLORS.white,
+                  border: `1px solid ${COLORS.subtle}`,
+                  color: COLORS.textMain,
+                  px: 2,
+                }}
+              >
+                Exportar CSV (programa)
+              </Button>
+            ) : null}
+
             <TextField
               select
               size="small"
               label="Buscar usuario por"
+              disabled={!!programFilterCode}
               value={userSearchField}
               onChange={(e) => setUserSearchField(e.target.value)}
               sx={{ width: { xs: "100%", md: 220 }, backgroundColor: COLORS.white }}
@@ -469,8 +864,8 @@ export default function Progresos() {
 
             <TextField
               size="small"
-              label="Búsqueda"
-              placeholder="Matrícula / CURP / Correo"
+              label={programFilterCode ? "Búsqueda (en este programa)" : "Búsqueda"}
+              placeholder={programFilterCode ? "Filtra por nombre / matrícula / correo" : "Matrícula / CURP / Correo"}
               value={userSearch}
               onChange={(e) => setUserSearch(e.target.value)}
               sx={{ flex: 1, backgroundColor: COLORS.white }}
@@ -484,6 +879,32 @@ export default function Progresos() {
                 ),
               }}
             />
+
+            {/* Filtros extra (solo aplica cuando filtras por programa) */}
+            {programFilterCode ? (
+              <>
+                <TextField
+                  size="small"
+                  type="number"
+                  label="Promedio mínimo"
+                  value={filterMinAvgScore}
+                  onChange={(e) => setFilterMinAvgScore(e.target.value)}
+                  sx={{ width: { xs: "100%", md: 180 }, backgroundColor: COLORS.white }}
+                />
+
+                <FormControlLabel
+                  sx={{ ml: { xs: 0, md: 0.5 } }}
+                  control={<Checkbox checked={filterOnlyNoProgress} onChange={(e) => setFilterOnlyNoProgress(e.target.checked)} />}
+                  label="Sin progreso"
+                />
+
+                <FormControlLabel
+                  sx={{ ml: { xs: 0, md: 0.5 } }}
+                  control={<Checkbox checked={filterOnlyNoScore} onChange={(e) => setFilterOnlyNoScore(e.target.checked)} />}
+                  label="Sin calificación"
+                />
+              </>
+            ) : null}
 
             <Tooltip title="Refrescar">
               <IconButton
@@ -501,7 +922,32 @@ export default function Progresos() {
             </Alert>
           )}
 
+          {programUsersError && (
+            <Alert severity="error" sx={{ borderRadius: 3, mt: 1.5 }}>
+              {programUsersError}
+            </Alert>
+          )}
+
           <Divider sx={{ my: 1.5, borderColor: COLORS.subtle }} />
+
+          {programFilterCode && programUsersMeta ? (
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.2, flexWrap: "wrap" }}>
+              <Chip
+                label={`Programa: ${safeStr(programUsersMeta?.program?.name)} (${safeStr(programUsersMeta?.program?.code)})`}
+                sx={{ backgroundColor: COLORS.white, border: `1px solid ${COLORS.subtle}`, fontWeight: 900 }}
+              />
+              <Chip
+                label={`Alumnos: ${safeStr(programUsersMeta?.count)}`}
+                sx={{ backgroundColor: COLORS.white, border: `1px solid ${COLORS.subtle}`, fontWeight: 900 }}
+              />
+              {programUsersMeta?.totalActivities !== null && programUsersMeta?.totalActivities !== undefined ? (
+                <Chip
+                  label={`Actividades del programa: ${safeStr(programUsersMeta?.totalActivities)}`}
+                  sx={{ backgroundColor: COLORS.white, border: `1px solid ${COLORS.subtle}`, fontWeight: 900 }}
+                />
+              ) : null}
+            </Stack>
+          ) : null}
 
           <TableContainer sx={{ maxHeight: 360 }}>
             <Table stickyHeader size="small">
@@ -510,22 +956,26 @@ export default function Progresos() {
                   <TableCell sx={{ backgroundColor: COLORS.whiteSoft, fontWeight: 900 }}>Matrícula</TableCell>
                   <TableCell sx={{ backgroundColor: COLORS.whiteSoft, fontWeight: 900 }}>Nombre</TableCell>
                   <TableCell sx={{ backgroundColor: COLORS.whiteSoft, fontWeight: 900 }}>Correo</TableCell>
+                  <TableCell sx={{ backgroundColor: COLORS.whiteSoft, fontWeight: 900 }}>Estado</TableCell>
+                  <TableCell sx={{ backgroundColor: COLORS.whiteSoft, fontWeight: 900 }}>Progreso</TableCell>
                   <TableCell sx={{ backgroundColor: COLORS.whiteSoft, fontWeight: 900 }}>Acción</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {usersLoading ? (
+                {usersLoading || programUsersLoading ? (
                   <TableRow>
-                    <TableCell colSpan={4} sx={{ py: 4 }}>
+                    <TableCell colSpan={6} sx={{ py: 4 }}>
                       <Stack direction="row" spacing={1} alignItems="center" justifyContent="center">
                         <CircularProgress size={18} />
-                        <Typography sx={{ color: COLORS.textMuted }}>Buscando…</Typography>
+                        <Typography sx={{ color: COLORS.textMuted }}>
+                          {programFilterCode ? "Cargando…" : "Buscando…"}
+                        </Typography>
                       </Stack>
                     </TableCell>
                   </TableRow>
                 ) : usersPageRows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4} sx={{ py: 4 }}>
+                    <TableCell colSpan={6} sx={{ py: 4 }}>
                       <Typography sx={{ color: COLORS.textMuted, textAlign: "center" }}>Sin resultados.</Typography>
                     </TableCell>
                   </TableRow>
@@ -535,6 +985,33 @@ export default function Progresos() {
                       <TableCell>{safeStr(u.matricula) || "—"}</TableCell>
                       <TableCell>{fullNameOf(u) || "—"}</TableCell>
                       <TableCell>{safeStr(u.correo) || "—"}</TableCell>
+                      <TableCell>
+                        <Chip
+                          label={safeStr(u?.estado) || "—"}
+                          size="small"
+                          sx={{
+                            backgroundColor: COLORS.white,
+                            border: `1px solid ${COLORS.subtle}`,
+                            fontWeight: 900,
+                            color: COLORS.textMain,
+                          }}
+                        />
+                      </TableCell>
+
+                      <TableCell>
+                        <Typography sx={{ fontWeight: 900, color: COLORS.textMain, fontSize: 13 }}>
+                          {u?.progress_pct !== undefined && u?.progress_pct !== null ? `${u.progress_pct}%` : "—"}
+                        </Typography>
+
+                        {u?.avg_score !== undefined && u?.avg_score !== null ? (
+                          <Typography sx={{ color: COLORS.textMuted, fontSize: 12 }}>
+                            Promedio: <b>{safeStr(u.avg_score)}</b>
+                          </Typography>
+                        ) : (
+                          <Typography sx={{ color: COLORS.textMuted, fontSize: 12 }}> </Typography>
+                        )}
+                      </TableCell>
+
                       <TableCell>
                         <Button
                           size="small"
@@ -661,6 +1138,22 @@ export default function Progresos() {
                 Vista del programa — {safeStr(selectedProgram.name)}
               </Typography>
 
+              <Button
+                variant="outlined"
+                onClick={exportSelectedProgramProgressCSV}
+                disabled={!selectedUser || !selectedProgram || !programView}
+                sx={{
+                  borderRadius: 2,
+                  fontWeight: 900,
+                  backgroundColor: COLORS.white,
+                  border: `1px solid ${COLORS.subtle}`,
+                  color: COLORS.textMain,
+                  px: 2,
+                }}
+              >
+                Exportar CSV (progreso)
+              </Button>
+
               {programView?.summary ? (
                 <Stack direction="row" spacing={1} flexWrap="wrap">
                   <Chip
@@ -735,13 +1228,11 @@ export default function Progresos() {
                         const itemId = isUpload ? docId : isRequest ? reqId : null;
                         const reviewKey = kind && itemId ? buildReviewKey(kind, itemId) : null;
 
-                        const edit = reviewKey ? (reviewEdits?.[reviewKey] || {}) : {};
+                        const edit = reviewKey ? reviewEdits?.[reviewKey] || {} : {};
                         const saving = reviewKey ? !!reviewSaving?.[reviewKey] : false;
-                        const msg = reviewKey ? (reviewSavedMsg?.[reviewKey] || "") : "";
+                        const msg = reviewKey ? reviewSavedMsg?.[reviewKey] || "" : "";
 
-                        const canReview =
-                          (isUpload && hasDoc) ||
-                          (isRequest && hasReq);
+                        const canReview = (isUpload && hasDoc) || (isRequest && hasReq);
 
                         return (
                           <TableRow key={a.activity_id} hover>
@@ -850,7 +1341,7 @@ export default function Progresos() {
                                       label="Estado"
                                       value={
                                         edit.status ||
-                                        (kind === "doc" ? (doc?.doc_status || "submitted") : (req?.status || "submitted"))
+                                        (kind === "doc" ? doc?.doc_status || "submitted" : req?.status || "submitted")
                                       }
                                       onChange={(e) => handleReviewEdit(reviewKey, { status: e.target.value })}
                                       sx={{ width: 170, backgroundColor: COLORS.white }}

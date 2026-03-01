@@ -32,7 +32,7 @@ export default function Usuarios() {
 
   return (
     <Box sx={{ minHeight: "100vh", backgroundColor: COLORS.bg, px: { xs: 1.5, md: 2 }, py: 2 }}>
-      <Box sx={{ maxWidth: 1400, mx: "auto" }}>
+      <Box sx={{ maxWidth: 1400, mx: "auto", width: "100%", minWidth: 0, overflowX: "hidden" }}>
         {/* Header + switch */}
         <Paper
           elevation={0}
@@ -103,9 +103,35 @@ export default function Usuarios() {
           </Typography>
         </Paper>
 
-        {/* Render condicional */}
-        {isConsultar && <ConsultarUsuarios />}
-        {isEditar && <EditarUsuarios />}
+        {/* Render condicional (responsive / anti-scroll horizontal) */}
+        <Box
+          sx={{
+            width: "100%",
+            minWidth: 0, // ✅ permite que flex/grids no "empujen" el layout a lo ancho
+            overflowX: "hidden", // ✅ evita scroll horizontal en la página completa
+          }}
+        >
+          {/* Si alguna tabla interna se pasa de ancho, el scroll ocurre aquí (más UX) */}
+          <Box
+            sx={{
+              width: "100%",
+              minWidth: 0,
+              overflowX: "auto",
+              WebkitOverflowScrolling: "touch",
+              "&::-webkit-scrollbar": { height: 10 },
+              "&::-webkit-scrollbar-thumb": {
+                backgroundColor: COLORS.subtle,
+                borderRadius: 999,
+              },
+              "&::-webkit-scrollbar-track": {
+                backgroundColor: "transparent",
+              },
+            }}
+          >
+            {isConsultar && <ConsultarUsuarios />}
+            {isEditar && <EditarUsuarios />}
+          </Box>
+        </Box>
       </Box>
     </Box>
   );

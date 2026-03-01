@@ -66,6 +66,7 @@ const TABLE_COLUMNS = [
   { key: "curp", label: "CURP", minWidth: 180, sortable: true },
   { key: "correo", label: "Correo", minWidth: 220, sortable: true },
   { key: "estado", label: "Estado", minWidth: 120, sortable: true },
+  { key: "entrevistado", label: "Entrevista", minWidth: 150, sortable: false },
   { key: "estado_validacion", label: "Validación", minWidth: 140, sortable: true },
 ];
 
@@ -105,6 +106,30 @@ function toISODateInput(value) {
   return `${y}-${m}-${day}`;
 }
 
+function EntrevistaChip({ value }) {
+  const v = (value || "").toString().trim().toLowerCase();
+  if (!v) {
+    return (
+      <Chip
+        label="—"
+        size="small"
+        variant="outlined"
+        sx={{ textTransform: "uppercase", fontSize: 11, opacity: 0.7 }}
+      />
+    );
+  }
+  const isSi = v === "si";
+  return (
+    <Chip
+      label={isSi ? "Entrevistado" : "No entrevistado"}
+      size="small"
+      color={isSi ? "success" : undefined}
+      variant={isSi ? "filled" : "outlined"}
+      sx={{ textTransform: "uppercase", fontSize: 11 }}
+    />
+  );
+}
+
 export default function EditarUsuarios() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -116,6 +141,12 @@ export default function EditarUsuarios() {
 
   // búsqueda client-side (nombre completo)
   const [nameSearch, setNameSearch] = useState("");
+
+  // filtros client-side extra
+  const [estadoFilter, setEstadoFilter] = useState("");
+  const [coloniaFilter, setColoniaFilter] = useState("");
+  const [validacionFilter, setValidacionFilter] = useState("");
+  const [entrevistaFilter, setEntrevistaFilter] = useState(""); // "", "si", "no", "none"
 
   // tabla
   const [page, setPage] = useState(0);
@@ -179,6 +210,46 @@ export default function EditarUsuarios() {
     }
   };
 
+
+const setEntrevistadoUser = async (userId, entrevistado) => {
+  try {
+    if (!userId) throw new Error("userId inválido");
+
+    const auth = getAuth();
+    const currentUser = auth.currentUser;
+    if (!currentUser) throw new Error("Usuario no autenticado");
+
+    const idToken = await currentUser.getIdToken();
+    const uid = currentUser.uid;
+
+    const v = (entrevistado ?? "").toString().trim().toLowerCase();
+    if (!["si", "no"].includes(v)) throw new Error('Valor inválido (usa "si" o "no")');
+
+    const res = await fetch(`${API_BASE}/users/${userId}/entrevistado`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${idToken}`,
+        "x-firebase-uid": uid,
+      },
+      body: JSON.stringify({ entrevistado: v }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || "No se pudo actualizar entrevista");
+
+    // actualiza UI local (tabla + selected)
+    setRows((prev) => prev.map((u) => (u.id === userId ? { ...u, entrevistado: v } : u)));
+    setSelected((prev) => (prev?.id === userId ? { ...prev, entrevistado: v } : prev));
+
+    setSaveMsg(v === "si" ? "✅ Marcado como entrevistado." : "✅ Marcado como NO entrevistado.");
+    setSaveError("");
+  } catch (e) {
+    setSaveError(e.message || "Error al actualizar entrevista");
+    setSaveMsg("");
+  }
+};
+
   useEffect(() => {
     fetchUsers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -198,8 +269,42 @@ export default function EditarUsuarios() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchField, search]);
 
+
+  const uniqueEstados = useMemo(() => {
+    const s = new Set(rows.map((r) => (r.estado || "").trim()).filter(Boolean));
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
+  const uniqueColonias = useMemo(() => {
+    const s = new Set(rows.map((r) => (r.colonia || "").trim()).filter(Boolean));
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
+  const uniqueValidaciones = useMemo(() => {
+    const s = new Set(rows.map((r) => (r.estado_validacion || "").trim()).filter(Boolean));
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
   const filteredRows = useMemo(() => {
     let r = [...rows];
+
+    if (estadoFilter) {
+      const term = normalizeText(estadoFilter);
+      r = r.filter((x) => normalizeText(x.estado).includes(term));
+    }
+    if (coloniaFilter) {
+      const term = normalizeText(coloniaFilter);
+      r = r.filter((x) => normalizeText(x.colonia).includes(term));
+    }
+    if (validacionFilter) {
+      const term = normalizeText(validacionFilter);
+      r = r.filter((x) => normalizeText(x.estado_validacion).includes(term));
+    }
+    if (entrevistaFilter) {
+      const v = (x) => ((x?.entrevistado ?? "").toString().trim().toLowerCase());
+      if (entrevistaFilter === "none") r = r.filter((x) => !v(x));
+      else r = r.filter((x) => v(x) === entrevistaFilter);
+    }
 
     if (nameSearch.trim()) {
       const term = normalizeText(nameSearch.trim());
@@ -423,7 +528,94 @@ export default function EditarUsuarios() {
               sx={{ flex: 1, minWidth: { md: 360 }, backgroundColor: COLORS.white }}
             />
           </Stack>
-        </Stack>
+        
+<Stack direction={{ xs: "column", md: "row" }} spacing={1.2} alignItems="stretch" sx={{ mt: 1.2 }}>
+  <TextField
+    select
+    size="small"
+    label="Estado"
+    value={estadoFilter}
+    onChange={(e) => setEstadoFilter(e.target.value)}
+    sx={{ width: { xs: "100%", md: 260 }, backgroundColor: COLORS.white }}
+  >
+    <MenuItem value="">Todos</MenuItem>
+    {uniqueEstados.map((x) => (
+      <MenuItem key={x} value={x}>
+        {x}
+      </MenuItem>
+    ))}
+  </TextField>
+
+  <TextField
+    select
+    size="small"
+    label="Colonia"
+    value={coloniaFilter}
+    onChange={(e) => setColoniaFilter(e.target.value)}
+    sx={{ width: { xs: "100%", md: 320 }, backgroundColor: COLORS.white }}
+  >
+    <MenuItem value="">Todas</MenuItem>
+    {uniqueColonias.map((x) => (
+      <MenuItem key={x} value={x}>
+        {x}
+      </MenuItem>
+    ))}
+  </TextField>
+
+  <TextField
+    select
+    size="small"
+    label="Validación"
+    value={validacionFilter}
+    onChange={(e) => setValidacionFilter(e.target.value)}
+    sx={{ width: { xs: "100%", md: 220 }, backgroundColor: COLORS.white }}
+  >
+    <MenuItem value="">Todas</MenuItem>
+    {uniqueValidaciones.map((x) => (
+      <MenuItem key={x} value={x}>
+        {x}
+      </MenuItem>
+    ))}
+  </TextField>
+
+  <TextField
+    select
+    size="small"
+    label="Entrevista"
+    value={entrevistaFilter}
+    onChange={(e) => setEntrevistaFilter(e.target.value)}
+    sx={{ width: { xs: "100%", md: 220 }, backgroundColor: COLORS.white }}
+  >
+    <MenuItem value="">Todas</MenuItem>
+    <MenuItem value="si">Entrevistado</MenuItem>
+    <MenuItem value="no">No entrevistado</MenuItem>
+    <MenuItem value="none">Sin dato</MenuItem>
+  </TextField>
+
+  <Button
+    variant="text"
+    onClick={() => {
+      setEstadoFilter("");
+      setColoniaFilter("");
+      setValidacionFilter("");
+      setEntrevistaFilter("");
+    }}
+    sx={{
+      width: { xs: "100%", md: 220 },
+      borderRadius: 2,
+      textTransform: "none",
+      fontWeight: 900,
+      color: COLORS.textMuted,
+      backgroundColor: COLORS.white,
+      border: `1px solid ${COLORS.subtle}`,
+      "&:hover": { backgroundColor: COLORS.whiteSoft },
+    }}
+  >
+    Limpiar filtros
+  </Button>
+</Stack>
+
+</Stack>
       </Paper>
 
       {error && (
@@ -507,10 +699,16 @@ export default function EditarUsuarios() {
                 pageRows.map((r, idx) => (
                   <TableRow key={`${r.id ?? "row"}-${idx}`} hover sx={{ "& td": { borderBottom: `1px solid ${COLORS.subtle}` } }}>
                     {TABLE_COLUMNS.map((c) => (
-                      <TableCell key={c.key} sx={{ whiteSpace: "nowrap" }}>
-                        {safeStr(r?.[c.key]) || <span style={{ color: COLORS.textMuted }}>—</span>}
-                      </TableCell>
-                    ))}
+  <TableCell key={c.key} sx={{ whiteSpace: "nowrap" }}>
+    {c.key === "entrevistado" ? (
+      <EntrevistaChip value={r?.entrevistado} />
+    ) : safeStr(r?.[c.key]) ? (
+      safeStr(r?.[c.key])
+    ) : (
+      <span style={{ color: COLORS.textMuted }}>—</span>
+    )}
+  </TableCell>
+))}
 
                     <TableCell sx={{ whiteSpace: "nowrap" }}>
                       <Button
@@ -597,7 +795,46 @@ export default function EditarUsuarios() {
                 Matrícula: <b style={{ color: COLORS.textMain }}>{safeStr(selected.matricula) || "—"}</b> &nbsp;•&nbsp;
                 Correo: <b style={{ color: COLORS.textMain }}>{safeStr(selected.correo) || "—"}</b> &nbsp;•&nbsp;
                 Validación: <b style={{ color: COLORS.textMain }}>{safeStr(selected.estado_validacion) || "—"}</b>
+&nbsp;•&nbsp;
+Entrevista: <b style={{ color: COLORS.textMain }}>
+  <EntrevistaChip value={selected.entrevistado} />
+</b>
+
               </Typography>
+
+
+<Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+  <Button
+    size="small"
+    variant="contained"
+    onClick={() => setEntrevistadoUser(selected.id, "si")}
+    sx={{
+      backgroundColor: COLORS.red,
+      "&:hover": { backgroundColor: COLORS.redDark },
+      borderRadius: 2,
+      fontWeight: 900,
+      textTransform: "none",
+    }}
+  >
+    Marcar SI entrevistado
+  </Button>
+  <Button
+    size="small"
+    variant="outlined"
+    onClick={() => setEntrevistadoUser(selected.id, "no")}
+    sx={{
+      borderRadius: 2,
+      textTransform: "none",
+      fontWeight: 900,
+      borderColor: COLORS.subtle,
+      color: COLORS.textMain,
+      backgroundColor: COLORS.white,
+      "&:hover": { backgroundColor: COLORS.whiteSoft },
+    }}
+  >
+    Marcar NO entrevistado
+  </Button>
+</Stack>
             </Paper>
           )}
 

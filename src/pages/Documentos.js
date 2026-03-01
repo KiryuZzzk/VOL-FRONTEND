@@ -10,25 +10,28 @@ import {
   Chip,
   Alert,
   CircularProgress,
-  Table,
-  TableHead,
-  TableRow,
-  TableCell,
-  TableBody,
-  TableContainer,
-  TablePagination,
   IconButton,
   Tooltip,
   Divider,
   Collapse,
+  Avatar,
+  TablePagination,
+  ToggleButton,
+  ToggleButtonGroup,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
 } from "@mui/material";
-import { FiRefreshCw, FiArrowUp, FiArrowDown, FiExternalLink } from "react-icons/fi";
+import { FiRefreshCw, FiChevronDown, FiChevronUp, FiExternalLink, FiFilter } from "react-icons/fi";
 import { getAuth } from "firebase/auth";
 
-/** 🎨 Paleta */
+/** 🎨 Paleta (misma que ya usas) */
 const COLORS = {
   bg: "#f5f0ff",
-  white: "#ffffff",
+  white: "#fcfcfc",
   whiteSoft: "#fff8ff",
   subtle: "#e6dfef",
   red: "#ff3333",
@@ -42,6 +45,47 @@ const COLORS = {
 };
 
 const API_BASE = "https://vol-backend.onrender.com";
+
+function safeStr(v) {
+  if (v === null || v === undefined) return "";
+  return String(v);
+}
+
+function normalizeKey(v) {
+  return safeStr(v)
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+// 🔐 fetch con Firebase token (+ uid header cuando el backend lo pide)
+async function authedFetch(url, options = {}) {
+  const auth = getAuth();
+  const currentUser = auth.currentUser;
+  if (!currentUser) throw new Error("Usuario no autenticado");
+
+  const idToken = await currentUser.getIdToken();
+  const uid = currentUser.uid;
+
+  const headers = {
+    ...(options.headers || {}),
+    Authorization: `Bearer ${idToken}`,
+    "x-firebase-uid": uid,
+  };
+
+  const res = await fetch(url, { ...options, headers });
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(txt || `HTTP ${res.status}`);
+  }
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 
 const SEARCH_FIELDS = [
   { value: "matricula", label: "Matrícula" },
@@ -93,7 +137,7 @@ function normalizeEstadoStr(v) {
  * ✅ Estado real:
  * - Preferir *_estado si existe
  * - Fallback: si hay archivo y aprobado==1 => validado, else pendiente
- * - NO interpretar false como rechazado (eso era el bug)
+ * - NO interpretar false como rechazado
  */
 function getDocStatus(row, f) {
   const hasDoc = !!row?.[f.key];
@@ -108,9 +152,9 @@ function getDocStatus(row, f) {
 }
 
 function statusMeta(status) {
-  if (status === "validado") return { label: "Validado", color: COLORS.green };
-  if (status === "rechazado") return { label: "Rechazado", color: COLORS.danger };
-  return { label: "Pendiente", color: COLORS.amber };
+  if (status === "validado") return { label: "Validado", color: COLORS.green, border: "#1b5e20" };
+  if (status === "rechazado") return { label: "Rechazado", color: COLORS.danger, border: "#b71c1c" };
+  return { label: "Pendiente", color: COLORS.amber, border: "#7a4b00" };
 }
 
 function countStatuses(row) {
@@ -130,6 +174,30 @@ function countStatuses(row) {
   return { ok, rej, pen };
 }
 
+function initialsFromName(name) {
+  const parts = safeCellValue(name).trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "—";
+  if (parts.length === 1) return parts[0].slice(0, 1).toUpperCase();
+  return (parts[0].slice(0, 1) + parts[1].slice(0, 1)).toUpperCase();
+}
+
+const SORT_OPTIONS = [
+  { key: "matricula", label: "Matrícula" },
+  { key: "nombre", label: "Nombre" },
+  { key: "curp", label: "CURP" },
+  { key: "correo", label: "Correo" },
+  { key: "__pendientes__", label: "Pendientes" },
+  { key: "__validados__", label: "Validados" },
+  { key: "__rechazados__", label: "Rechazados" },
+];
+
+const excelCellSx = {
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  maxWidth: "100%",
+};
+
 const Documentos = () => {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -140,8 +208,16 @@ const Documentos = () => {
   const [nameSearch, setNameSearch] = useState("");
   const [docStatusFilter, setDocStatusFilter] = useState(""); // validado|pendiente|rechazado|"" (todos)
 
+
+// ✅ Filtro por programa (reutiliza catálogo de /progreso)
+const [programFilterList, setProgramFilterList] = useState([]); // [{program_id, code, name}]
+const [programFilterCode, setProgramFilterCode] = useState(""); // "" = todos
+const [programRosterLoading, setProgramRosterLoading] = useState(false);
+const [programRosterError, setProgramRosterError] = useState("");
+const [programUserKeys, setProgramUserKeys] = useState(() => new Set()); // matricula|correo|uid normalizados
+
   const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(20);
+  const [rowsPerPage, setRowsPerPage] = useState(12);
 
   const [sortKey, setSortKey] = useState("matricula");
   const [sortDir, setSortDir] = useState("asc");
@@ -149,6 +225,53 @@ const Documentos = () => {
   const [expandedMatricula, setExpandedMatricula] = useState(null);
 
   const debounceRef = useRef(null);
+
+
+const fetchProgramFilterList = async () => {
+  try {
+    const data = await authedFetch(`${API_BASE}/progreso/admin/programas`, { method: "GET" });
+    setProgramFilterList(Array.isArray(data?.programs) ? data.programs : []);
+  } catch (e) {
+    setProgramFilterList([]);
+  }
+};
+
+const fetchProgramRoster = async (programCode) => {
+  const code = safeStr(programCode).trim().toUpperCase();
+  if (!code) {
+    setProgramUserKeys(new Set());
+    setProgramRosterError("");
+    return;
+  }
+
+  setProgramRosterLoading(true);
+  setProgramRosterError("");
+  try {
+    const data = await authedFetch(
+      `${API_BASE}/progreso/admin/programas/${encodeURIComponent(code)}/users`,
+      { method: "GET" }
+    );
+
+    const list = Array.isArray(data?.users) ? data.users : [];
+    const keys = new Set();
+
+    for (const r of list) {
+      const mat = normalizeKey(r?.matricula);
+      const correo = normalizeKey(r?.correo);
+      const uid = normalizeKey(r?.uid);
+      if (mat) keys.add(mat);
+      if (correo) keys.add(correo);
+      if (uid) keys.add(uid);
+    }
+
+    setProgramUserKeys(keys);
+  } catch (e) {
+    setProgramRosterError(e?.message || "No se pudo cargar el roster del programa.");
+    setProgramUserKeys(new Set());
+  } finally {
+    setProgramRosterLoading(false);
+  }
+};
 
   const fetchDocs = async () => {
     setLoading(true);
@@ -234,8 +357,17 @@ const Documentos = () => {
 
   useEffect(() => {
     fetchDocs();
+    fetchProgramFilterList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+useEffect(() => {
+  fetchProgramRoster(programFilterCode);
+  setPage(0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [programFilterCode]);
+
+
 
   const [debouncedSearch, setDebouncedSearch] = useState("");
   useEffect(() => {
@@ -248,6 +380,18 @@ const Documentos = () => {
 
   const filteredRows = useMemo(() => {
     let r = [...rows];
+
+// filtro por programa (frontend) usando roster de /progreso
+if (programFilterCode) {
+  if (!programUserKeys || programUserKeys.size === 0) return [];
+  r = r.filter((x) => {
+    const mat = normalizeKey(x?.matricula);
+    const correo = normalizeKey(x?.correo);
+    const uid = normalizeKey(x?.uid);
+    return (mat && programUserKeys.has(mat)) || (correo && programUserKeys.has(correo)) || (uid && programUserKeys.has(uid));
+  });
+}
+
 
     const term = normalizeText(debouncedSearch.trim());
     if (term) r = r.filter((x) => normalizeText(x?.[searchField]).includes(term));
@@ -269,6 +413,7 @@ const Documentos = () => {
     }
 
     const dir = sortDir === "asc" ? 1 : -1;
+
     r.sort((a, b) => {
       if (sortKey === "__pendientes__" || sortKey === "__rechazados__" || sortKey === "__validados__") {
         const ca = countStatuses(a);
@@ -297,19 +442,13 @@ const Documentos = () => {
     return filteredRows.slice(start, start + rowsPerPage);
   }, [filteredRows, page, rowsPerPage]);
 
-  const handleSort = (key) => {
-    if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else {
-      setSortKey(key);
-      setSortDir("asc");
-    }
-  };
-
   const clearFilters = () => {
     setSearch("");
     setNameSearch("");
     setDocStatusFilter("");
+    setProgramFilterCode("");
     setExpandedMatricula(null);
+    setPage(0);
   };
 
   const toggleExpand = (matricula) => {
@@ -323,16 +462,28 @@ const Documentos = () => {
     { value: "rechazado", label: "Rechazado" },
   ];
 
+  const metaPendiente = statusMeta("pendiente");
+  const metaValidado = statusMeta("validado");
+  const metaRechazado = statusMeta("rechazado");
+
+  const chipWhiteOutlined = (meta) => ({
+    fontWeight: 900,
+    backgroundColor: COLORS.white,
+    border: `2px solid ${meta.border}`,
+    color: meta.color,
+  });
+
   return (
     <Box sx={{ minHeight: "100vh", backgroundColor: COLORS.bg, px: { xs: 1.5, md: 2 }, py: 2 }}>
-      <Box sx={{ maxWidth: 1400, mx: "auto" }}>
+      <Box sx={{ maxWidth: 1200, mx: "auto" }}>
+        {/* Header + filtros */}
         <Paper
           elevation={0}
           sx={{
             p: 2,
             borderRadius: 3,
             background: `linear-gradient(180deg, ${COLORS.whiteSoft} 0%, ${COLORS.white} 100%)`,
-            border: `1px solid ${COLORS.subtle}`,
+            border: `2px solid ${COLORS.subtle}`,
             mb: 2,
           }}
         >
@@ -341,17 +492,23 @@ const Documentos = () => {
             spacing={1.5}
             alignItems={{ xs: "flex-start", md: "center" }}
             justifyContent="space-between"
+            sx={{ width: "100%" }}
           >
-            <Typography variant="h5" sx={{ fontWeight: 900, color: COLORS.textMain, letterSpacing: 1.2 }}>
-              DOCUMENTOS
-            </Typography>
+            <Stack spacing={0.4}>
+              <Typography variant="h5" sx={{ fontWeight: 900, color: COLORS.textMain, letterSpacing: 1.2 }}>
+                DOCUMENTOS
+              </Typography>
+              <Typography variant="body2" sx={{ color: COLORS.textMuted }}>
+                Da click a una fila para desplegar y validar documentos.
+              </Typography>
+            </Stack>
 
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
               <Chip
                 label={`${filteredRows.length} resultados`}
                 sx={{
                   backgroundColor: COLORS.white,
-                  border: `1px solid ${COLORS.subtle}`,
+                  border: `2px solid ${COLORS.subtle}`,
                   fontWeight: 800,
                   color: COLORS.textMain,
                 }}
@@ -361,7 +518,7 @@ const Documentos = () => {
                 <IconButton
                   onClick={fetchDocs}
                   sx={{
-                    border: `1px solid ${COLORS.subtle}`,
+                    border: `2px solid ${COLORS.subtle}`,
                     borderRadius: 2,
                     backgroundColor: COLORS.white,
                   }}
@@ -375,13 +532,35 @@ const Documentos = () => {
           <Divider sx={{ my: 1.5, borderColor: COLORS.subtle }} />
 
           <Stack spacing={1.2}>
-            <Stack direction={{ xs: "column", md: "row" }} spacing={1.2} alignItems="stretch">
+            <TextField
+  select
+  size="small"
+  label="Filtrar por programa"
+  value={programFilterCode}
+  onChange={(e) => {
+    setProgramFilterCode(e.target.value);
+    setPage(0);
+  }}
+  sx={{ width: { xs: "100%", md: 320 }, backgroundColor: COLORS.white }}
+>
+  <MenuItem value="">Todos los programas</MenuItem>
+  {programFilterList.map((p) => (
+    <MenuItem key={p.code} value={p.code}>
+      {p.name} ({p.code})
+    </MenuItem>
+  ))}
+</TextField>
+
+<Stack direction={{ xs: "column", md: "row" }} spacing={1.2} alignItems="stretch">
               <TextField
                 select
                 size="small"
                 label="Buscar por"
                 value={searchField}
-                onChange={(e) => setSearchField(e.target.value)}
+                onChange={(e) => {
+                  setSearchField(e.target.value);
+                  setPage(0);
+                }}
                 sx={{ width: { xs: "100%", md: 220 }, backgroundColor: COLORS.white }}
               >
                 {SEARCH_FIELDS.map((f) => (
@@ -397,7 +576,7 @@ const Documentos = () => {
                 placeholder="Matrícula / CURP / Correo"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                sx={{ width: { xs: "100%", md: 520 }, backgroundColor: COLORS.white }}
+                sx={{ width: { xs: "100%", md: 420 }, backgroundColor: COLORS.white }}
               />
 
               <TextField
@@ -405,18 +584,36 @@ const Documentos = () => {
                 label="Nombre / apellidos"
                 placeholder="Ej. ana garcía / garcía / ana"
                 value={nameSearch}
-                onChange={(e) => setNameSearch(e.target.value)}
-                sx={{ flex: 1, minWidth: { md: 360 }, backgroundColor: COLORS.white }}
+                onChange={(e) => {
+                  setNameSearch(e.target.value);
+                  setPage(0);
+                }}
+                sx={{ flex: 1, minWidth: { md: 280 }, backgroundColor: COLORS.white }}
               />
-            </Stack>
+</Stack>
 
-            <Stack direction={{ xs: "column", md: "row" }} spacing={1.2} alignItems="stretch">
+{programRosterError ? (
+  <Alert severity="error" sx={{ borderRadius: 3 }}>
+    {programRosterError}
+  </Alert>
+) : null}
+
+{programFilterCode && programRosterLoading ? (
+  <Alert severity="info" sx={{ borderRadius: 3 }}>
+    Cargando roster del programa…
+  </Alert>
+) : null}
+
+<Stack direction={{ xs: "column", md: "row" }} spacing={1.2} alignItems="stretch">
               <TextField
                 select
                 size="small"
                 label="Estado (al menos 1 doc)"
                 value={docStatusFilter}
-                onChange={(e) => setDocStatusFilter(e.target.value)}
+                onChange={(e) => {
+                  setDocStatusFilter(e.target.value);
+                  setPage(0);
+                }}
                 sx={{ width: { xs: "100%", md: 320 }, backgroundColor: COLORS.white }}
               >
                 {estadoOptions.map((o) => (
@@ -426,9 +623,53 @@ const Documentos = () => {
                 ))}
               </TextField>
 
+              <TextField
+                select
+                size="small"
+                label="Ordenar por"
+                value={sortKey}
+                onChange={(e) => setSortKey(e.target.value)}
+                sx={{ width: { xs: "100%", md: 260 }, backgroundColor: COLORS.white }}
+              >
+                {SORT_OPTIONS.map((o) => (
+                  <MenuItem key={o.key} value={o.key}>
+                    {o.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+
+              <ToggleButtonGroup
+                exclusive
+                size="small"
+                value={sortDir}
+                onChange={(_, v) => v && setSortDir(v)}
+                sx={{
+                  backgroundColor: COLORS.white,
+                  borderRadius: 2,
+                  border: `2px solid ${COLORS.subtle}`,
+                  overflow: "visible",
+                  width: { xs: "100%", md: 180 },
+                  "& .MuiToggleButton-root": {
+                    textTransform: "none",
+                    fontWeight: 900,
+                    color: COLORS.textMuted,
+                    border: "none",
+                    flex: 1,
+                  },
+                  "& .Mui-selected": {
+                    color: COLORS.textMain,
+                    backgroundColor: COLORS.whiteSoft,
+                  },
+                }}
+              >
+                <ToggleButton value="asc">Asc</ToggleButton>
+                <ToggleButton value="desc">Desc</ToggleButton>
+              </ToggleButtonGroup>
+
               <Button
                 variant="text"
                 onClick={clearFilters}
+                startIcon={<FiFilter />}
                 sx={{
                   width: { xs: "100%", md: 220 },
                   borderRadius: 2,
@@ -436,12 +677,22 @@ const Documentos = () => {
                   fontWeight: 900,
                   color: COLORS.textMuted,
                   backgroundColor: COLORS.white,
-                  border: `1px solid ${COLORS.subtle}`,
+                  border: `2px solid ${COLORS.subtle}`,
                   "&:hover": { backgroundColor: COLORS.whiteSoft },
                 }}
               >
                 Limpiar filtros
               </Button>
+            </Stack>
+
+            {/* Mini-leyenda de estados */}
+            <Stack direction="row" spacing={1} flexWrap="wrap" alignItems="center" sx={{ pt: 0.2 }}>
+              <Typography variant="body2" sx={{ color: COLORS.textMuted, fontWeight: 800 }}>
+                Leyenda:
+              </Typography>
+              <Chip size="small" label={metaPendiente.label} sx={chipWhiteOutlined(metaPendiente)} />
+              <Chip size="small" label={metaValidado.label} sx={chipWhiteOutlined(metaValidado)} />
+              <Chip size="small" label={metaRechazado.label} sx={chipWhiteOutlined(metaRechazado)} />
             </Stack>
           </Stack>
         </Paper>
@@ -452,291 +703,395 @@ const Documentos = () => {
           </Alert>
         )}
 
+        {/* Contenido */}
         <Paper
           elevation={0}
           sx={{
             borderRadius: 3,
             backgroundColor: COLORS.white,
-            border: `1px solid ${COLORS.subtle}`,
-            overflow: "hidden",
+            border: `2px solid ${COLORS.subtle}`,
+            overflowY: "hidden",
+            overflowX: "hidden", // ✅ todo debe caber sin scroll horizontal
           }}
         >
-          <TableContainer sx={{ maxHeight: "70vh" }}>
-            <Table stickyHeader size="small">
-              <TableHead>
-                <TableRow>
-                  {[
-                    { key: "matricula", label: "Matrícula", minWidth: 130, sortable: true },
-                    { key: "nombre", label: "Nombre", minWidth: 240, sortable: true },
-                    { key: "curp", label: "CURP", minWidth: 180, sortable: true },
-                    { key: "correo", label: "Correo", minWidth: 240, sortable: true },
-                    { key: "__pendientes__", label: "Pendientes", minWidth: 120, sortable: true },
-                    { key: "__validados__", label: "Validados", minWidth: 120, sortable: true },
-                    { key: "__rechazados__", label: "Rechazados", minWidth: 120, sortable: true },
-                  ].map((c) => (
-                    <TableCell
-                      key={c.key}
-                      onClick={() => c.sortable && handleSort(c.key)}
-                      sx={{
-                        minWidth: c.minWidth,
-                        backgroundColor: COLORS.whiteSoft,
-                        borderBottom: `1px solid ${COLORS.subtle}`,
-                        fontWeight: 900,
+          {loading ? (
+            <Box sx={{ py: 6 }}>
+              <Stack direction="row" spacing={1} alignItems="center" justifyContent="center">
+                <CircularProgress size={20} />
+                <Typography variant="body2" sx={{ color: COLORS.textMuted }}>
+                  Cargando documentos…
+                </Typography>
+              </Stack>
+            </Box>
+          ) : pageRows.length === 0 ? (
+            <Box sx={{ py: 6 }}>
+              <Typography variant="body2" sx={{ color: COLORS.textMuted, textAlign: "center" }}>
+                No hay resultados con esos filtros.
+              </Typography>
+            </Box>
+          ) : (
+            <TableContainer
+              sx={{
+                width: "100%",
+                overflowX: "hidden", // ✅ sin scroll horizontal
+              }}
+            >
+              <Table
+                size="small"
+                aria-label="tabla documentos"
+                sx={{
+                  width: "100%",
+                                    tableLayout: "auto", // ✅ permite wrapping y evita scroll horizontal
+                  "& th, & td": {
+                    borderColor: COLORS.subtle,
+                  },
+                }}
+              >
+                <TableHead>
+                  <TableRow
+                    sx={{
+                      backgroundColor: COLORS.whiteSoft,
+                      "& th": {
+                        fontWeight: 950,
                         color: COLORS.textMain,
-                        cursor: c.sortable ? "pointer" : "default",
-                        userSelect: "none",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      <Stack direction="row" spacing={0.7} alignItems="center">
-                        <span>{c.label}</span>
-                        {sortKey === c.key ? (sortDir === "asc" ? <FiArrowUp /> : <FiArrowDown />) : null}
-                      </Stack>
-                    </TableCell>
-                  ))}
-                </TableRow>
-              </TableHead>
+                        borderBottom: `2px solid ${COLORS.subtle}`,
+                      },
+                    }}
+                  >
+                    <TableCell sx={{ width: 380 }}>Persona</TableCell>
+                    <TableCell sx={{ width: 360 }}>Datos</TableCell>
+                    <TableCell sx={{ width: 260, textAlign: "right" }}>Estatus docs</TableCell>
+                    <TableCell sx={{ width: 90, textAlign: "center" }} />
+</TableRow>
+                </TableHead>
 
-              <TableBody>
-                {loading ? (
-                  <TableRow>
-                    <TableCell colSpan={7} sx={{ py: 6 }}>
-                      <Stack direction="row" spacing={1} alignItems="center" justifyContent="center">
-                        <CircularProgress size={20} />
-                        <Typography variant="body2" sx={{ color: COLORS.textMuted }}>
-                          Cargando documentos…
-                        </Typography>
-                      </Stack>
-                    </TableCell>
-                  </TableRow>
-                ) : pageRows.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={7} sx={{ py: 6 }}>
-                      <Typography variant="body2" sx={{ color: COLORS.textMuted, textAlign: "center" }}>
-                        No hay resultados con esos filtros.
-                      </Typography>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  pageRows.map((r, idx) => {
+                <TableBody>
+                  {pageRows.map((r, idx) => {
                     const matricula = r?.matricula ?? `${idx}`;
                     const isExpanded = expandedMatricula === matricula;
                     const counts = countStatuses(r);
-
-                    const clickableCellSx = {
-                      whiteSpace: "nowrap",
-                      fontWeight: 900,
-                      cursor: "pointer",
-                      borderRadius: 1.5,
-                      "&:hover": { backgroundColor: COLORS.whiteSoft },
-                      outline: "none",
-                    };
+                    const name = fullNameOf(r) || "—";
 
                     return (
                       <React.Fragment key={`${matricula}-${idx}`}>
-                        <TableRow hover sx={{ "& td": { borderBottom: `1px solid ${COLORS.subtle}` } }}>
-                          <TableCell sx={{ whiteSpace: "nowrap" }}>
-                            {safeCellValue(r?.matricula) || <span style={{ color: COLORS.textMuted }}>—</span>}
-                          </TableCell>
-
-                          <TableCell
-                            tabIndex={0}
-                            role="button"
-                            aria-expanded={isExpanded}
-                            onClick={() => toggleExpand(matricula)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                toggleExpand(matricula);
-                              }
-                            }}
-                            sx={clickableCellSx}
-                            title="Click para ver documentos"
-                          >
-                            <Stack direction="row" spacing={1} alignItems="center">
-                              <span>{fullNameOf(r) || "—"}</span>
-                              <Chip
-                                size="small"
-                                label={isExpanded ? "Abierto" : "Abrir"}
+                        <TableRow
+                          hover
+                          role="button"
+                          tabIndex={0}
+                          aria-expanded={isExpanded}
+                          onClick={() => toggleExpand(matricula)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              toggleExpand(matricula);
+                            }
+                          }}
+                          sx={{
+                            cursor: "pointer",
+                            "&:hover": { backgroundColor: COLORS.whiteSoft },
+                            "& td": { verticalAlign: "middle" },
+                          }}
+                        >
+                                                    <TableCell sx={{ pr: 1 }}>
+                            <Stack direction="row" spacing={1.2} alignItems="center" sx={{ minWidth: 0 }}>
+                              <Avatar
                                 sx={{
-                                  height: 22,
+                                  width: 34,
+                                  height: 34,
                                   fontWeight: 900,
-                                  backgroundColor: COLORS.white,
-                                  border: `1px solid ${COLORS.subtle}`,
-                                  color: COLORS.textMuted,
+                                  backgroundColor: COLORS.subtle,
+                                  color: COLORS.textMain,
+                                  flex: "0 0 auto",
                                 }}
-                              />
+                              >
+                                {initialsFromName(name)}
+                              </Avatar>
+
+                              <Box sx={{ minWidth: 0 }}>
+                                <Typography
+                                  sx={{
+                                    fontWeight: 950,
+                                    color: COLORS.textMain,
+                                    lineHeight: 1.1,
+                                    whiteSpace: "normal",
+                                    wordBreak: "break-word",
+                                  }}
+                                  title={name}
+                                >
+                                  {name}
+                                </Typography>
+                                <Typography
+                                  variant="caption"
+                                  sx={{
+                                    display: "block",
+                                    color: COLORS.textMuted,
+                                    mt: 0.2,
+                                    whiteSpace: "normal",
+                                    wordBreak: "break-word",
+                                  }}
+                                >
+                                  {safeCellValue(r?.sobre_mi) ? safeCellValue(r?.sobre_mi) : "—"}
+                                </Typography>
+                              </Box>
                             </Stack>
                           </TableCell>
 
-                          <TableCell sx={{ whiteSpace: "nowrap" }}>
-                            {safeCellValue(r?.curp) || <span style={{ color: COLORS.textMuted }}>—</span>}
+                          <TableCell sx={{ pr: 1 }}>
+                            <Stack spacing={0.3} sx={{ minWidth: 0 }}>
+                              <Stack direction="row" spacing={0.8} flexWrap="wrap" sx={{ rowGap: 0.6 }}>
+                                <Typography
+                                  variant="caption"
+                                  sx={{ color: COLORS.textMuted, fontWeight: 900, letterSpacing: 0.2 }}
+                                >
+                                  Matrícula:
+                                </Typography>
+                                <Typography
+                                  variant="caption"
+                                  sx={{ color: COLORS.textMain, fontWeight: 900, whiteSpace: "normal", wordBreak: "break-word" }}
+                                >
+                                  {safeCellValue(r?.matricula) || "—"}
+                                </Typography>
+                              </Stack>
+
+                              <Stack direction="row" spacing={0.8} flexWrap="wrap" sx={{ rowGap: 0.6 }}>
+                                <Typography
+                                  variant="caption"
+                                  sx={{ color: COLORS.textMuted, fontWeight: 900, letterSpacing: 0.2 }}
+                                >
+                                  CURP:
+                                </Typography>
+                                <Typography
+                                  variant="caption"
+                                  sx={{ color: COLORS.textMain, fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word" }}
+                                >
+                                  {safeCellValue(r?.curp) || "—"}
+                                </Typography>
+                              </Stack>
+
+                              <Stack direction="row" spacing={0.8} flexWrap="wrap" sx={{ rowGap: 0.6 }}>
+                                <Typography
+                                  variant="caption"
+                                  sx={{ color: COLORS.textMuted, fontWeight: 900, letterSpacing: 0.2 }}
+                                >
+                                  Correo:
+                                </Typography>
+                                <Typography
+                                  variant="caption"
+                                  sx={{ color: COLORS.textMain, fontWeight: 800, whiteSpace: "normal", wordBreak: "break-word" }}
+                                >
+                                  {safeCellValue(r?.correo) || "—"}
+                                </Typography>
+                              </Stack>
+                            </Stack>
                           </TableCell>
 
-                          <TableCell sx={{ whiteSpace: "nowrap" }}>
-                            {safeCellValue(r?.correo) || <span style={{ color: COLORS.textMuted }}>—</span>}
+                          <TableCell sx={{ textAlign: "right" }}>
+                            <Stack direction="row" spacing={0.8} justifyContent="flex-end" flexWrap="wrap" sx={{ rowGap: 0.6 }}>
+                              <Chip size="small" label={`Pend: ${counts.pen}`} sx={chipWhiteOutlined(metaPendiente)} />
+                              <Chip size="small" label={`Val: ${counts.ok}`} sx={chipWhiteOutlined(metaValidado)} />
+                              <Chip size="small" label={`Rech: ${counts.rej}`} sx={chipWhiteOutlined(metaRechazado)} />
+                            </Stack>
                           </TableCell>
 
-                          <TableCell sx={{ whiteSpace: "nowrap" }}>
-                            <Chip label={counts.pen} size="small" sx={{ fontWeight: 900, backgroundColor: COLORS.white, border: `1px solid ${COLORS.subtle}` }} />
-                          </TableCell>
-
-                          <TableCell sx={{ whiteSpace: "nowrap" }}>
-                            <Chip label={counts.ok} size="small" sx={{ fontWeight: 900, backgroundColor: COLORS.white, border: `1px solid ${COLORS.subtle}` }} />
-                          </TableCell>
-
-                          <TableCell sx={{ whiteSpace: "nowrap" }}>
-                            <Chip label={counts.rej} size="small" sx={{ fontWeight: 900, backgroundColor: COLORS.white, border: `1px solid ${COLORS.subtle}` }} />
+                          <TableCell sx={{ textAlign: "center" }}>
+                            <Chip
+                              size="small"
+                              icon={isExpanded ? <FiChevronUp /> : <FiChevronDown />}
+                              label={isExpanded ? "Cerrar" : "Abrir"}
+                              sx={{
+                                height: 28,
+                                fontWeight: 900,
+                                backgroundColor: COLORS.white,
+                                border: `2px solid ${COLORS.subtle}`,
+                                color: COLORS.textMuted,
+                              }}
+                            />
                           </TableCell>
                         </TableRow>
 
                         <TableRow>
-                          <TableCell colSpan={7} sx={{ p: 0, borderBottom: `1px solid ${COLORS.subtle}` }}>
+                          <TableCell colSpan={4} sx={{ p: 0, borderBottom: `2px solid ${COLORS.subtle}` }}>
                             <Collapse in={isExpanded} timeout="auto" unmountOnExit>
-                              <Box sx={{ p: 2, backgroundColor: COLORS.whiteSoft }}>
+                              <Box sx={{ p: 1.6, backgroundColor: COLORS.whiteSoft }}>
                                 <Stack spacing={1.2}>
-                                  <Typography sx={{ fontWeight: 900, color: COLORS.textMain }}>
-                                    Documentos de: {fullNameOf(r) || "—"} ({safeCellValue(r?.matricula) || "—"})
-                                  </Typography>
+                                  <Typography sx={{ fontWeight: 950, color: COLORS.textMain }}>Documentos</Typography>
 
-                                  <Divider sx={{ borderColor: COLORS.subtle }} />
+                                  {/* Documentos en filas: mismo width, cero scroll horizontal */}
+                                  <Stack spacing={1} sx={{ width: "100%" }}>
+                                    {DOC_FIELDS.map((f) => {
+                                      const url = r?.[f.key];
+                                      const st = getDocStatus(r, f);
+                                      const meta = statusMeta(st || "pendiente");
+                                      const disabledNoFile = !url;
 
-                                  <Table size="small">
-                                    <TableHead>
-                                      <TableRow>
-                                        <TableCell sx={{ fontWeight: 900, color: COLORS.textMain, whiteSpace: "nowrap" }}>Documento</TableCell>
-                                        <TableCell sx={{ fontWeight: 900, color: COLORS.textMain, whiteSpace: "nowrap" }}>Archivo</TableCell>
-                                        <TableCell sx={{ fontWeight: 900, color: COLORS.textMain, whiteSpace: "nowrap" }}>Estado</TableCell>
-                                        <TableCell sx={{ fontWeight: 900, color: COLORS.textMain, whiteSpace: "nowrap" }}>Acciones</TableCell>
-                                      </TableRow>
-                                    </TableHead>
+                                      const baseGreyBtn = {
+                                        borderRadius: 2,
+                                        textTransform: "none",
+                                        fontWeight: 900,
+                                        backgroundColor: "#f3f3f3",
+                                        color: COLORS.textMain,
+                                        "&:hover": { backgroundColor: "#ececec" },
+                                      };
 
-                                    <TableBody>
-                                      {DOC_FIELDS.map((f) => {
-                                        const url = r?.[f.key];
-                                        const st = getDocStatus(r, f);
-                                        const meta = statusMeta(st || "pendiente");
-                                        const disabledNoFile = !url;
-
-                                        return (
-                                          <TableRow key={f.documento} hover sx={{ "& td": { borderBottom: `1px solid ${COLORS.subtle}` } }}>
-                                            <TableCell sx={{ whiteSpace: "nowrap", fontWeight: 800 }}>{f.label}</TableCell>
-
-                                            <TableCell sx={{ whiteSpace: "nowrap" }}>
-                                              {url ? (
-                                                <Button
-                                                  variant="outlined"
-                                                  size="small"
-                                                  startIcon={<FiExternalLink />}
-                                                  onClick={() => window.open(url, "_blank", "noopener,noreferrer")}
-                                                  sx={{
-                                                    borderRadius: 2,
-                                                    textTransform: "none",
-                                                    fontWeight: 900,
-                                                    borderColor: COLORS.subtle,
-                                                    color: COLORS.textMain,
-                                                    backgroundColor: COLORS.white,
-                                                    "&:hover": { backgroundColor: COLORS.whiteSoft },
-                                                  }}
-                                                >
-                                                  Ver
-                                                </Button>
-                                              ) : (
-                                                <span style={{ color: COLORS.textMuted }}>No disponible</span>
-                                              )}
-                                            </TableCell>
-
-                                            <TableCell sx={{ whiteSpace: "nowrap" }}>
-                                              <Chip
-                                                label={meta.label}
-                                                size="small"
+                                      return (
+                                        <Paper
+                                          key={f.documento}
+                                          elevation={0}
+                                          sx={{
+                                            width: "100%",
+                                            borderRadius: 2,
+                                            border: `2px solid ${COLORS.subtle}`,
+                                            backgroundColor: COLORS.white,
+                                            px: 1.2,
+                                            py: 1,
+                                          }}
+                                        >
+                                          <Stack
+                                            direction={{ xs: "column", md: "row" }}
+                                            spacing={1}
+                                            alignItems={{ xs: "stretch", md: "center" }}
+                                            justifyContent="space-between"
+                                            sx={{ width: "100%" }}
+                                          >
+                                            {/* Label + status */}
+                                            <Stack
+                                              direction={{ xs: "column", sm: "row" }}
+                                              spacing={1}
+                                              alignItems={{ xs: "flex-start", sm: "center" }}
+                                              sx={{ minWidth: 0, flex: 1 }}
+                                            >
+                                              <Typography
                                                 sx={{
                                                   fontWeight: 900,
-                                                  color: meta.color,
-                                                  backgroundColor: COLORS.white,
-                                                  border: `1px solid ${COLORS.subtle}`,
+                                                  color: COLORS.textMain,
+                                                  minWidth: { xs: "auto", sm: 220 },
+                                                  ...excelCellSx,
                                                 }}
-                                              />
-                                            </TableCell>
+                                                title={f.label}
+                                              >
+                                                {f.label}
+                                              </Typography>
 
-                                            <TableCell>
-                                              <Stack direction="row" spacing={1} flexWrap="wrap">
-                                                <Button
+                                              {url ? (
+                                                <Chip size="small" label={meta.label} sx={chipWhiteOutlined(meta)} />
+                                              ) : (
+                                                <Chip
                                                   size="small"
-                                                  disabled={disabledNoFile}
-                                                  onClick={() => actualizarEstado(matricula, f.documento, "validado")}
+                                                  label="No disponible"
                                                   sx={{
-                                                    borderRadius: 2,
-                                                    textTransform: "none",
                                                     fontWeight: 900,
-                                                    backgroundColor: disabledNoFile ? COLORS.subtle : "#c8facc",
-                                                    color: disabledNoFile ? COLORS.textMuted : "#1b5e20",
-                                                    border: `1px solid ${disabledNoFile ? COLORS.subtle : "#1b5e20"}`,
-                                                    "&:hover": { backgroundColor: disabledNoFile ? COLORS.subtle : "#b6f3bb" },
+                                                    backgroundColor: COLORS.white,
+                                                    border: `1px dashed ${COLORS.subtle}`,
+                                                    color: COLORS.textMuted,
                                                   }}
-                                                >
-                                                  ✅ Validar
-                                                </Button>
+                                                />
+                                              )}
+                                            </Stack>
 
-                                                <Button
-                                                  size="small"
-                                                  disabled={disabledNoFile}
-                                                  onClick={() => actualizarEstado(matricula, f.documento, "pendiente")}
-                                                  sx={{
-                                                    borderRadius: 2,
-                                                    textTransform: "none",
-                                                    fontWeight: 900,
-                                                    backgroundColor: disabledNoFile ? COLORS.subtle : "#fff2cc",
-                                                    color: disabledNoFile ? COLORS.textMuted : "#7a4b00",
-                                                    border: `1px solid ${disabledNoFile ? COLORS.subtle : "#7a4b00"}`,
-                                                    "&:hover": { backgroundColor: disabledNoFile ? COLORS.subtle : "#ffebb2" },
-                                                  }}
-                                                >
-                                                  ⏳ Pendiente
-                                                </Button>
+                                            {/* Actions */}
+                                            <Stack
+                                              direction="row"
+                                              spacing={1}
+                                              alignItems="center"
+                                              flexWrap="wrap"
+                                              justifyContent={{ xs: "flex-start", md: "flex-end" }}
+                                              sx={{ width: { xs: "100%", md: "auto" }, rowGap: 1 }}
+                                            >
+                                              <Button
+                                                variant="outlined"
+                                                size="small"
+                                                startIcon={<FiExternalLink />}
+                                                disabled={!url}
+                                                onClick={() => window.open(url, "_blank", "noopener,noreferrer")}
+                                                sx={{
+                                                  ...baseGreyBtn,
+                                                  border: `2px solid ${COLORS.line}`,
+                                                  color: url ? COLORS.textMain : COLORS.textMuted,
+                                                  backgroundColor: url ? "#f3f3f3" : COLORS.subtle,
+                                                  "&:hover": { backgroundColor: url ? "#ececec" : COLORS.subtle },
+                                                }}
+                                              >
+                                                Ver
+                                              </Button>
 
-                                                <Button
-                                                  size="small"
-                                                  disabled={disabledNoFile}
-                                                  onClick={() => actualizarEstado(matricula, f.documento, "rechazado")}
-                                                  sx={{
-                                                    borderRadius: 2,
-                                                    textTransform: "none",
-                                                    fontWeight: 900,
-                                                    backgroundColor: disabledNoFile ? COLORS.subtle : "#ffccd5",
-                                                    color: disabledNoFile ? COLORS.textMuted : "#b71c1c",
-                                                    border: `1px solid ${disabledNoFile ? COLORS.subtle : "#b71c1c"}`,
-                                                    "&:hover": { backgroundColor: disabledNoFile ? COLORS.subtle : "#ffb9c6" },
-                                                  }}
-                                                >
-                                                  ❌ Rechazar
-                                                </Button>
-                                              </Stack>
-                                            </TableCell>
-                                          </TableRow>
-                                        );
-                                      })}
-                                    </TableBody>
-                                  </Table>
+                                              <Button
+                                                size="small"
+                                                disabled={disabledNoFile}
+                                                onClick={() => actualizarEstado(matricula, f.documento, "validado")}
+                                                sx={{
+                                                  ...baseGreyBtn,
+                                                  border: `2px solid ${metaValidado.border}`,
+                                                  color: disabledNoFile ? COLORS.textMuted : metaValidado.border,
+                                                  backgroundColor: disabledNoFile ? COLORS.subtle : "#f3f3f3",
+                                                  "&:hover": { backgroundColor: disabledNoFile ? COLORS.subtle : "#ececec" },
+                                                }}
+                                              >
+                                                ✅ Validar
+                                              </Button>
 
-                                  <Divider sx={{ borderColor: COLORS.subtle }} />
+                                              <Button
+                                                size="small"
+                                                disabled={disabledNoFile}
+                                                onClick={() => actualizarEstado(matricula, f.documento, "pendiente")}
+                                                sx={{
+                                                  ...baseGreyBtn,
+                                                  border: `2px solid ${metaPendiente.border}`,
+                                                  color: disabledNoFile ? COLORS.textMuted : metaPendiente.border,
+                                                  backgroundColor: disabledNoFile ? COLORS.subtle : "#f3f3f3",
+                                                  "&:hover": { backgroundColor: disabledNoFile ? COLORS.subtle : "#ececec" },
+                                                }}
+                                              >
+                                                ⏳ Pendiente
+                                              </Button>
 
-                                  <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-                                    <Box sx={{ flex: 1 }}>
+                                              <Button
+                                                size="small"
+                                                disabled={disabledNoFile}
+                                                onClick={() => actualizarEstado(matricula, f.documento, "rechazado")}
+                                                sx={{
+                                                  ...baseGreyBtn,
+                                                  border: `2px solid ${metaRechazado.border}`,
+                                                  color: disabledNoFile ? COLORS.textMuted : metaRechazado.border,
+                                                  backgroundColor: disabledNoFile ? COLORS.subtle : "#f3f3f3",
+                                                  "&:hover": { backgroundColor: disabledNoFile ? COLORS.subtle : "#ececec" },
+                                                }}
+                                              >
+                                                ❌ Rechazar
+                                              </Button>
+                                            </Stack>
+                                          </Stack>
+                                        </Paper>
+                                      );
+                                    })}
+                                  </Stack>
+
+                                  <Divider sx={{ borderColor: COLORS.subtle, mt: 0.6 }} />
+
+                                  <Stack direction={{ xs: "column", md: "row" }} spacing={1.2} alignItems="stretch">
+                                    <Box sx={{ flex: 1, minWidth: 0 }}>
                                       <Typography sx={{ fontWeight: 900, color: COLORS.textMain }}>Sobre mí</Typography>
                                       <Typography variant="body2" sx={{ color: COLORS.textMuted }}>
                                         {safeCellValue(r?.sobre_mi) || "—"}
                                       </Typography>
                                     </Box>
 
-                                    <Box sx={{ minWidth: 260 }}>
+                                    <Paper
+                                      elevation={0}
+                                      sx={{
+                                        borderRadius: 3,
+                                        border: `2px solid ${COLORS.subtle}`,
+                                        backgroundColor: COLORS.white,
+                                        p: 1.2,
+                                        width: { xs: "100%", md: 360 },
+                                      }}
+                                    >
                                       <Typography variant="body2" sx={{ color: COLORS.textMuted }}>
                                         <b>Fecha de creación:</b> {safeCellValue(r?.fecha_creacion) || "—"}
                                       </Typography>
                                       <Typography variant="body2" sx={{ color: COLORS.textMuted }}>
                                         <b>Última actualización:</b> {safeCellValue(r?.ultima_actualizacion) || "—"}
                                       </Typography>
-                                    </Box>
+                                    </Paper>
                                   </Stack>
                                 </Stack>
                               </Box>
@@ -745,11 +1100,13 @@ const Documentos = () => {
                         </TableRow>
                       </React.Fragment>
                     );
-                  })
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+
+          <Divider sx={{ borderColor: COLORS.subtle }} />
 
           <TablePagination
             component="div"
@@ -761,7 +1118,7 @@ const Documentos = () => {
               setRowsPerPage(parseInt(e.target.value, 10));
               setPage(0);
             }}
-            rowsPerPageOptions={[10, 20, 50, 100]}
+            rowsPerPageOptions={[6, 12, 24, 48]}
           />
         </Paper>
       </Box>

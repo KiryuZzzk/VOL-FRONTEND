@@ -1,13 +1,20 @@
 // src/components/ProfilePlatformSmall.jsx
 // -----------------------------------------------------------------------------
 // Este componente es la versión “small” (móvil / cards full width).
-// Antes traía MOCK_* y mostraba HORAS/CURSOS.
-// Ahora iguala la lógica del componente grande:
+// FIX: Ya NO “adivina” endpoints legacy (activity-progress / progress / me).
+// Ahora usa SOLO el endpoint real:
+//   GET /progreso/me/resumen
+// para evitar 404 y "Cannot GET /progreso/me".
+// -----------------------------------------------------------------------------
 //
-//   - DÍAS: rango inclusivo entre la primera actividad iniciada y la última terminada/vista
-//   - ACTIVIDADES: total de activity_id con status='completed'
+// Respuesta esperada de /progreso/me/resumen (ejemplo):
+// {
+//   activitiesCompleted: number,
+//   daysActive: number,
+//   firstActivityAt: string|null,
+//   lastActivityAt: string|null
+// }
 //
-// Carga también foto y perfil básico desde backend.
 // -----------------------------------------------------------------------------
 
 import React, { useEffect, useState } from "react";
@@ -40,80 +47,26 @@ function firstNonEmpty(obj, keys) {
   return undefined;
 }
 
-// Helper: parse seguro de fechas
-function toDate(value) {
-  if (!value) return null;
-  const d = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
+/**
+ * ✅ Progreso real desde tu endpoint nuevo:
+ *   GET /progreso/me/resumen
+ */
+async function fetchProgressResumen(token) {
+  const url = `${BACKEND_URL}/progreso/me/resumen`;
+  const resp = await axios.get(url, {
+    headers: { Authorization: `Bearer ${token}` },
+    validateStatus: () => true,
+  });
 
-// Estadísticas desde user_activity_progress
-function computeActivityStats(rows) {
-  const safeRows = Array.isArray(rows) ? rows : [];
-
-  const completedCount = safeRows.reduce((acc, r) => {
-    const st = String(r?.status || "").toLowerCase();
-    return st === "completed" ? acc + 1 : acc;
-  }, 0);
-
-  let minDate = null;
-  let maxDate = null;
-
-  for (const r of safeRows) {
-    const started = toDate(r?.started_at);
-    const completed = toDate(r?.completed_at);
-    const lastSeen = toDate(r?.last_seen_at);
-
-    const candidateStart = started || completed || lastSeen;
-    const candidateEnd = completed || lastSeen || started;
-
-    if (candidateStart) {
-      if (!minDate || candidateStart < minDate) minDate = candidateStart;
-    }
-    if (candidateEnd) {
-      if (!maxDate || candidateEnd > maxDate) maxDate = candidateEnd;
-    }
+  if (!(resp.status >= 200 && resp.status < 300)) {
+    const msg =
+      resp?.data?.error ||
+      resp?.data?.message ||
+      `No se pudo cargar resumen (${resp.status})`;
+    throw new Error(msg);
   }
 
-  let days = null;
-  if (minDate && maxDate) {
-    const MS_PER_DAY = 24 * 60 * 60 * 1000;
-    const diffMs = maxDate.getTime() - minDate.getTime();
-    const diffDays = Math.floor(diffMs / MS_PER_DAY);
-    days = Math.max(1, diffDays + 1);
-  }
-
-  return { completedCount, days };
-}
-
-// Igual que en el grande: probamos varios endpoints hasta encontrar uno que responda.
-async function fetchProgressRows(token) {
-  const endpoints = [
-    `${BACKEND_URL}/progreso/me/activity-progress`,
-    `${BACKEND_URL}/progreso/me/activity-progress/list`,
-    `${BACKEND_URL}/progreso/me/progress`,
-    `${BACKEND_URL}/progreso/me`,
-  ];
-
-  for (const url of endpoints) {
-    try {
-      const resp = await axios.get(url, {
-        headers: { Authorization: `Bearer ${token}` },
-        validateStatus: () => true,
-      });
-
-      if (!(resp.status >= 200 && resp.status < 300)) continue;
-
-      const data = resp.data;
-      if (Array.isArray(data)) return data;
-      if (data && Array.isArray(data.rows)) return data.rows;
-      if (data && Array.isArray(data.data)) return data.data;
-    } catch (_) {
-      // seguimos intentando
-    }
-  }
-
-  return null;
+  return resp.data || {};
 }
 
 export default function ProfilePlatformSmall() {
@@ -211,27 +164,28 @@ export default function ProfilePlatformSmall() {
           setEmail(user.email || MOCK_EMAIL);
         }
 
-        // 3) Stats reales (DÍAS y ACTIVIDADES)
+        // 3) Stats reales (DÍAS y ACTIVIDADES) — SOLO /resumen
         try {
-          const rows = await fetchProgressRows(token);
+          const resumen = await fetchProgressResumen(token);
 
-          if (rows) {
-            const { completedCount, days: computedDays } = computeActivityStats(rows);
+          const completed =
+            resumen?.activitiesCompleted ??
+            resumen?.completedActivities ??
+            resumen?.completed ??
+            resumen?.count ??
+            0;
 
-            setActivities(
-              Number.isFinite(Number(completedCount)) ? Number(completedCount) : MOCK_ACTIVITIES
-            );
+          const daysActive = resumen?.daysActive ?? resumen?.activeDays ?? resumen?.days ?? 0;
 
-            setDays(
-              computedDays !== null && computedDays !== undefined
-                ? computedDays
-                : MOCK_DAYS
-            );
-          } else {
-            setActivities(MOCK_ACTIVITIES);
-            setDays(MOCK_DAYS);
-          }
+          setActivities(
+            Number.isFinite(Number(completed)) ? Number(completed) : MOCK_ACTIVITIES
+          );
+
+          setDays(
+            Number.isFinite(Number(daysActive)) ? Number(daysActive) : MOCK_DAYS
+          );
         } catch (_) {
+          // No rompemos UI
           setActivities(MOCK_ACTIVITIES);
           setDays(MOCK_DAYS);
         }
@@ -544,3 +498,4 @@ export default function ProfilePlatformSmall() {
     </Box>
   );
 }
+
