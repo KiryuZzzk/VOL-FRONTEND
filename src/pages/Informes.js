@@ -1222,6 +1222,15 @@ export default function Informes() {
                     label="Programa para detalle"
                     value={selectedProgramCode}
                     onChange={(e) => setSelectedProgramCode(e.target.value)}
+                    MenuProps={{
+                      sx: { zIndex: 11001 },
+                      PaperProps: {
+                        sx: {
+                          zIndex: 11001,
+                          maxHeight: 360,
+                        },
+                      },
+                    }}
                   >
                     <MenuItem value="">— Sin seleccionar —</MenuItem>
                     {programs.map((p) => (
